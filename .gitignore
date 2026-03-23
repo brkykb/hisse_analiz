@@ -1,0 +1,24 @@
+# Python ayarları
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Sanal ortam (Virtual Environment)
+venv/
+.venv/
+env/
+ENV/
+.idea/
+
+# Gizli bilgiler (BURASI ÇOK ÖNEMLİ!)
+.env
+config.json
+*.log
+
+# Veritabanı ve Geçici Dosyalar
+*.db
+*.sqlite3
+
+# Mac/Windows sistem dosyaları
+.DS_Store
+Thumbs.db

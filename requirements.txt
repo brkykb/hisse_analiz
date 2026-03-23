@@ -1,0 +1,18 @@
+# Telegram Bot Framework
+python-telegram-bot
+
+# Finansal Veri Çekme
+yfinance
+
+# Veri İşleme ve Analiz
+pandas
+numpy
+
+# Google Gemini AI Entegrasyonu
+google-generativeai
+
+# HTTP İstekleri (Gerekirse)
+httpx
+
+# Çevresel Değişkenler
+python-dotenv
