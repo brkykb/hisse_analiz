@@ -666,3 +666,45 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(button_handler))
     print("Milyoner Trader Botu Aktif (Bütüncül Sürüm)!")
     app.run_polling()
+
+
+    # --- Mevcut kodlarının bittiği yerden itibaren (app.run_polling satırının öncesi) ---
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# --- KOYEB HEALTH CHECK & FAKE SERVER -----------------------
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+import http.server
+import socketserver
+import threading
+
+def run_health_check_server():
+    # Koyeb'in atadığı PORT'u al, yoksa 8000 kullan
+    port = int(os.getenv("PORT", 8000))
+    handler = http.server.SimpleHTTPRequestHandler
+    # 'allow_reuse_address' hata vermemesi için önemli
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        print(f"✅ Koyeb Health Check sunucusu {port} portunda aktif.")
+        httpd.serve_forever()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# --- ANA ÇALIŞTIRICI ----------------------------------------
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if __name__ == '__main__':
+    # 1. Koyeb'i kandırmak için sahte sunucuyu ayrı bir kolda (thread) başlat
+    threading.Thread(target=run_health_check_server, daemon=True).start()
+
+    # 2. Telegram Botunu kur
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("analiz", analiz))
+    app.add_handler(CommandHandler("tara", tara))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_text))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    print("🚀 Milyoner Trader Botu Aktif (Bütüncül Sürüm)!")
+    
+    # 3. Botu çalıştır
+    app.run_polling()
