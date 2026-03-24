@@ -8,6 +8,8 @@ import json
 import re
 import asyncio
 import time
+import urllib.request
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
@@ -73,6 +75,36 @@ BIST_SCAN_LIST = [
     "KOZAA","ALARK","DOHOL","GESAN","YATAS",
 ]
 
+BIST_TICKERS_CACHE = {"time": 0, "list": []}
+
+def get_all_bist_tickers():
+    """IS Yatırım web sitesinden dinamik olarak tüm BIST hisse sembollerini çeker."""
+    global BIST_TICKERS_CACHE
+    if time.time() - BIST_TICKERS_CACHE["time"] < 86400 and BIST_TICKERS_CACHE["list"]: # 24 saat önbellek
+        return BIST_TICKERS_CACHE["list"]
+        
+    try:
+        url = "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/Temel-Degerler-Ve-Oranlar.aspx"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            html = response.read().decode('utf-8')
+            soup = BeautifulSoup(html, 'html.parser')
+            options = soup.find_all('option')
+            symbols = []
+            for opt in options:
+                val = opt.get('value', '').strip()
+                if val and 4 <= len(val) <= 6 and val.isalpha() and val.isupper():
+                    symbols.append(val)
+            if symbols:
+                BIST_TICKERS_CACHE["time"] = time.time()
+                BIST_TICKERS_CACHE["list"] = list(set(symbols))
+                return BIST_TICKERS_CACHE["list"]
+    except Exception as e:
+        logging.warning(f"BIST listesi çekilemedi: {e}")
+    
+    return BIST_SCAN_LIST # Fallback
+
+
 def quick_screen(symbol: str) -> dict | None:
     """
     Hisseyi teknik ve temel kriterlere göre hızla puanlar (0-100).
@@ -83,7 +115,7 @@ def quick_screen(symbol: str) -> dict | None:
         ticker_sym = f"{symbol}.IS"
         data = yf.download(ticker_sym, period="6mo", interval="1d",
                            progress=False, auto_adjust=True)
-        if data.empty or len(data) < 50:
+        if data.empty or len(data) < 15:
             return None
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -94,41 +126,36 @@ def quick_screen(symbol: str) -> dict | None:
         volume = data["Volume"]
 
         # ── RSI (Wilder EMA) ──
+        rsi_period = min(14, max(1, len(close)-1))
         delta    = close.diff()
         gain     = delta.where(delta > 0, 0.0)
         loss     = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_gain = gain.ewm(alpha=1/rsi_period, min_periods=1, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/rsi_period, min_periods=1, adjust=False).mean()
         rs       = avg_gain / avg_loss.replace(0, 0.001)
         rsi_s    = 100 - (100 / (1 + rs))
-        rsi      = float(rsi_s.iloc[-1])
-        rsi_prev = float(rsi_s.iloc[-2])
+        rsi      = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
+        rsi_prev = float(rsi_s.iloc[-2]) if len(rsi_s) > 1 and not pd.isna(rsi_s.iloc[-2]) else 50.0
 
         # ── MACD ──
-        exp1     = close.ewm(span=12, adjust=False).mean()
-        exp2     = close.ewm(span=26, adjust=False).mean()
+        exp1     = close.ewm(span=min(12, len(close)), adjust=False).mean()
+        exp2     = close.ewm(span=min(26, len(close)), adjust=False).mean()
         macd_s   = exp1 - exp2
-        signal_s = macd_s.ewm(span=9, adjust=False).mean()
+        signal_s = macd_s.ewm(span=min(9, len(close)), adjust=False).mean()
         macd_cur = float(macd_s.iloc[-1])
-        macd_prv = float(macd_s.iloc[-2])
+        macd_prv = float(macd_s.iloc[-2]) if len(macd_s) > 1 else macd_cur
         sig_cur  = float(signal_s.iloc[-1])
-        sig_prv  = float(signal_s.iloc[-2])
+        sig_prv  = float(signal_s.iloc[-2]) if len(signal_s) > 1 else sig_cur
 
         # ── SMA200 ──
-        sma50    = float(close.rolling(50).mean().iloc[-1])
-        sma200   = float(close.rolling(min(200, len(close))).mean().iloc[-1])
+        sma50    = float(close.rolling(min(50, len(close)), min_periods=1).mean().iloc[-1])
+        sma200   = float(close.rolling(min(200, len(close)), min_periods=1).mean().iloc[-1])
         price    = float(close.iloc[-1])
 
         # ── Hacim oranı ──
-        vol_mean = float(volume.rolling(20).mean().iloc[-1])
+        vol_mean = float(volume.rolling(min(20, len(close)), min_periods=1).mean().iloc[-1])
         vol_last = float(volume.iloc[-1])
         vol_ratio = vol_last / vol_mean if vol_mean > 0 else 1.0
-
-        # ── Temel: forwardPE (sadece fast_info kullan, .info çağrısı YAPMA)
-        # .info her hisse için 1+ sn ekler ve 95 hissede rate limit tetikler.
-        # fast_info anlık fiyat/piyasa değeri verir ama PE yok; PE olmadan puan
-        # sadece teknik kriterlere göre verilecek (forwardPE bonus = 0).
-        fwd_pe = None  # bu satırı silip .info eklemek tarayıcıyı öldürür
 
         # ─── PUANLAMA ────────────────────────────────────────────────────
         score = 0
@@ -196,17 +223,63 @@ def quick_screen(symbol: str) -> dict | None:
             score += 5
             tags.append("SMA50 Üstünde")
 
-        # 6) Temel: forwardPE → bonus
-        if fwd_pe and isinstance(fwd_pe, (int, float)) and 0 < fwd_pe < 15:
-            score += 10
-            tags.append(f"F/K={round(fwd_pe,1)} Ucuz")
-        elif fwd_pe and isinstance(fwd_pe, (int, float)) and 15 <= fwd_pe < 25:
-            score += 5
-            tags.append(f"F/K={round(fwd_pe,1)}")
-
         # Minimum eşik: 25 puan (düşük hacimli günlerde bile sonuç verir)
         if score < 25:
             return None
+
+        # ─── TEMEL FİLTRELER (Sadece teknikten geçenlere uygulanır) ───
+        try:
+            info = yf.Ticker(ticker_sym).info
+            
+            # 1. Öz sermaye negatif olmayacak
+            bv = info.get("bookValue")
+            if bv is not None and isinstance(bv, (int, float)) and bv <= 0:
+                return None
+                
+            # 2. F/K < 10
+            fk = info.get("forwardPE") or info.get("trailingPE")
+            if fk is not None and isinstance(fk, (int, float)) and fk >= 10:
+                return None
+                
+            # 3. PD/DD <= 10
+            pddd = info.get("priceToBook")
+            if pddd is not None and isinstance(pddd, (int, float)) and pddd > 10:
+                return None
+                
+            # 4. Yıllık kar büyümesi >= 100% (1.0)
+            eg = info.get("earningsGrowth")
+            if eg is not None and isinstance(eg, (int, float)) and eg < 1.0:
+                return None
+                
+            # 5. Hisse Başına Kar (EPS) >= 0
+            eps = info.get("trailingEps")
+            if eps is not None and isinstance(eps, (int, float)) and eps < 0:
+                return None
+                
+            # 6. PEG <= 1
+            peg = info.get("pegRatio")
+            if peg is not None and isinstance(peg, (int, float)) and peg > 1:
+                return None
+                
+            # 7. Özkaynak Karlılığı (ROE) >= %10
+            roe = info.get("returnOnEquity")
+            if roe is not None and isinstance(roe, (int, float)) and roe < 0.10:
+                return None
+                
+            # 8. ROIC (Proxy: ROA) >= %30
+            roa = info.get("returnOnAssets")
+            if roa is not None and isinstance(roa, (int, float)) and roa < 0.30:
+                return None
+
+            # Eğer temel veriler uygunsa (veya yfinance eksik verse bile diğerlerini geçmişse)
+            # F/K'ya göre bonus puan ver.
+            if fk and isinstance(fk, (int, float)) and 0 < fk < 10:
+                score += 10
+                tags.append(f"F/K={round(fk,1)} Ucuz")
+
+        except Exception as e:
+            # Info çekilemezse (timeout vb.), hisseyi eleme ama log at
+            logging.warning(f"Temel veri hatası ({symbol}): {e}")
 
         return {
             "symbol": symbol,
@@ -269,36 +342,47 @@ def calculate_indicators(data):
     high = data['High']
     low = data['Low']
     volume = data['Volume']
+    
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
-    # Wilder'in orjinal yumuşatma yöntemi: alpha = 1/14
-    # TradingView ve Bloomberg'in de kullandığı standart formül budur.
-    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    
+    rsi_period = min(14, max(1, len(close)-1))
+    avg_gain = gain.ewm(alpha=1/rsi_period, min_periods=1, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/rsi_period, min_periods=1, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, 0.001)
     rsi_series = 100 - (100 / (1 + rs))
-    rsi = float(rsi_series.iloc[-1])
-    rsi_prev = float(rsi_series.iloc[-2]) if len(rsi_series) > 1 else rsi
     
-    sma20 = float(close.rolling(window=20).mean().iloc[-1])
-    sma50 = float(close.rolling(window=50).mean().iloc[-1])
-    sma200 = float(close.rolling(window=200).mean().iloc[-1]) if len(data) >= 200 else sma50
-    std20 = close.rolling(window=20).std().iloc[-1]
+    rsi = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+    rsi_prev = float(rsi_series.iloc[-2]) if len(rsi_series) > 1 and not pd.isna(rsi_series.iloc[-2]) else 50.0
+    
+    sma20_s = close.rolling(window=min(20, len(close)), min_periods=1).mean()
+    sma20 = float(sma20_s.iloc[-1])
+    sma50 = float(close.rolling(window=min(50, len(close)), min_periods=1).mean().iloc[-1])
+    sma200 = float(close.rolling(window=min(200, len(close)), min_periods=1).mean().iloc[-1])
+    
+    std20_s = close.rolling(window=min(20, len(close)), min_periods=1).std()
+    std20 = float(std20_s.iloc[-1]) if not pd.isna(std20_s.iloc[-1]) else 0.0
+    
     tr1 = high - low
     tr2 = abs(high - close.shift())
     tr3 = abs(low - close.shift())
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    # ATR için de Wilder EMA (TradingView standardı)
-    atr = float(tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean().iloc[-1])
-    exp1 = close.ewm(span=12, adjust=False).mean()
-    exp2 = close.ewm(span=26, adjust=False).mean()
-    macd = exp1 - exp2
-    signal = macd.ewm(span=9, adjust=False).mean()
-    w_change = ((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5]) * 100
-    m_change = ((close.iloc[-1] - close.iloc[-20]) / close.iloc[-20]) * 100
     
-    vol_mean_20 = volume.rolling(window=20).mean().iloc[-1]
+    atr_s = tr.ewm(alpha=1/rsi_period, min_periods=1, adjust=False).mean()
+    atr = float(atr_s.iloc[-1]) if not pd.isna(atr_s.iloc[-1]) else 0.0
+    
+    exp1 = close.ewm(span=min(12, len(close)), adjust=False).mean()
+    exp2 = close.ewm(span=min(26, len(close)), adjust=False).mean()
+    macd = exp1 - exp2
+    signal = macd.ewm(span=min(9, len(close)), adjust=False).mean()
+    
+    idx_5 = min(5, len(close)-1) if len(close) > 5 else (len(close)-1 if len(close) > 1 else 0)
+    idx_20 = min(20, len(close)-1) if len(close) > 20 else (len(close)-1 if len(close) > 1 else 0)
+    w_change = ((close.iloc[-1] - close.iloc[-1-idx_5]) / close.iloc[-1-idx_5]) * 100 if idx_5 > 0 else 0.0
+    m_change = ((close.iloc[-1] - close.iloc[-1-idx_20]) / close.iloc[-1-idx_20]) * 100 if idx_20 > 0 else 0.0
+    
+    vol_mean_20 = float(volume.rolling(window=min(20, len(close)), min_periods=1).mean().iloc[-1])
     vol_ratio = float(volume.iloc[-1] / vol_mean_20) if vol_mean_20 > 0 else 1.0
 
     algo_signal = "NÖTR: Mevcut trend yatay/belirsiz."
@@ -432,9 +516,27 @@ def get_stock_analysis(symbol):
         except:
             pass
 
+        # Yeni eklenen gelişmiş temel metrikler
+        eg_val = info.get("earningsGrowth")
+        eg_str = f"%{round(eg_val * 100, 2)}" if isinstance(eg_val, (int, float)) else "Veri Yok"
+        
+        roe_val = info.get("returnOnEquity")
+        roe_str = f"%{round(roe_val * 100, 2)}" if isinstance(roe_val, (int, float)) else "Veri Yok"
+        
+        roa_val = info.get("returnOnAssets") 
+        roa_str = f"%{round(roa_val * 100, 2)}" if isinstance(roa_val, (int, float)) else "Veri Yok"
+        
+        peg_val = info.get("pegRatio")
+        peg_str = str(round(peg_val, 2)) if isinstance(peg_val, (int, float)) else "Veri Yok"
+
+        eps_str = str(round(info.get("trailingEps"), 2)) if isinstance(info.get("trailingEps"), (int, float)) else "Veri Yok"
+        bv_str = str(round(info.get("bookValue"), 2)) if isinstance(info.get("bookValue"), (int, float)) else "Veri Yok"
+
         fundamental_context = (
-            f"F/K: {fk} | PD/DD: {pddd} | FAVÖK Marjı: {ebitda_margin} "
-            f"| FD/FAVÖK: {ev_ebitda} | Adil Değer: {adil_deger_str}"
+            f"F/K: {fk} | PD/DD: {pddd} | Hisse Başına Kar (EPS): {eps_str} | Öz Sermaye (Defter Değeri): {bv_str}\n"
+            f"FAVÖK Marjı: {ebitda_margin} | FD/FAVÖK: {ev_ebitda} | Adil Değer: {adil_deger_str}\n"
+            f"Yıllık Kar Büyümesi: {eg_str} | Özkaynak Karlılığı (ROE): {roe_str} | ROIC (Zımni ROA): {roa_str}\n"
+            f"PEG Oranı: {peg_str}"
         )
 
         data = yf.download(ticker_sym, period="1y", interval="1d", progress=False, auto_adjust=True)
@@ -459,9 +561,10 @@ def get_stock_analysis(symbol):
         
         KESİNLİKLE DİKKAT ETMEN GEREKENLER (KURALLAR):
         1. ASLA karmaşık finansal kelimeler (jargon) kullanma. Normal, borsaya yeni başlamış bir insanın anlayacağı kadar BASİT ve SADE anlat.
-        2. "Volatilite", "Momentum", "RSI", "MACD", "SMA", "F/K", "PD/DD" gibi terimleri doğrudan rapora yazmak yerine, bunların ne anlama geldiğini yorumlayarak anlat (Örn: "Şirketin kârlılığına göre fiyatı çok uygun", "Hisse çok düşmüş, artık tepki verebilir", "Ana yükseliş trendi devam ediyor").
+        2. "Volatilite", "Momentum", "RSI", "MACD", "SMA", "F/K", "PD/DD" gibi terimleri doğrudan rapora yazmak yerine, bunların ne anlama geldiğini yorumlayarak anlat.
         3. İnsanları teknik verilere boğma. Sadece verilen sayıların iyi mi kötü mü olduğunu söyle.
-        4. Sana verilen GERÇEK sayıları referans al, uydurma.
+        4. Sana verilen GERÇEK sayıları referans al.
+        5. TEMEL BEKLENTİLER: Bir hissede ideal olarak (F/K < 10), (PD/DD <= 10), (Yıllık Kar Büyümesi >= %100), (ROE >= %10), (ROIC >= %30), (PEG <= 1), Öz sermayenin negatif olmaması ve EPS'in pozitif olması istenir. Ayrıca Fintables Karne Puanı beklentisi ise 12 ve üzeri olması istenir. Verilen bilanço sayılarını bu ideallere kıyaslayarak değerlendir (beklentiyi/ideali karşılayanları methet, karşılamayanları eleştir).
         
         Makro Durum: {macro_context}
         Endeks Durumu: {market_context}
@@ -541,7 +644,7 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tüm BIST listesini tarayarak fırsat hisselerini listeler."""
-    scan_list = BIST_SCAN_LIST
+    scan_list = get_all_bist_tickers()
     source_label = f"BIST Piyasası ({len(scan_list)} hisse)"
     msg = await update.message.reply_text(
         f"🔭 *FIRSAT TARAYICI*\n"
@@ -616,7 +719,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_watchlist(watchlist)
             await query.message.reply_text(f"✅ {symbol} listeye eklendi.")
     elif data == 'hisse_tara':
-        scan_list = BIST_SCAN_LIST        # Her zaman tam piyasa listesi
+        scan_list = get_all_bist_tickers()        # Her zaman tam piyasa listesi
         source_label = f"BIST Piyasası ({len(scan_list)} hisse)"
         await query.message.reply_text(
             f"🔭 *FIRSAT TARAYICI*\n"
