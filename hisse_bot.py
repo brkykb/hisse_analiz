@@ -9,6 +9,7 @@ import re
 import asyncio
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -453,6 +454,28 @@ def sanitize_md(text):
     text = text.replace("`", "'")
     return text
 
+def get_stock_news(symbol: str) -> str:
+    """Hisse ile ilgili en son haber başlıklarını (KAP dahil) Google News üzerinden çeker."""
+    try:
+        url = f"https://news.google.com/rss/search?q={symbol}+hisse+KAP&hl=tr&gl=TR&ceid=TR:tr"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            xml_data = response.read()
+            root = ET.fromstring(xml_data)
+            news = []
+            for item in root.findall('.//item')[:4]:
+                title = item.find('title')
+                pubDate = item.find('pubDate')
+                if title is not None and pubDate is not None:
+                    # Tarih formatını temizle (Örn: "Thu, 15 Mar 2026 12:00:00 GMT" -> "15 Mar")
+                    date_clean = pubDate.text[:-13].replace(',','')
+                    news.append(f"[{date_clean}] {title.text}")
+            if news:
+                return "\n".join(news)
+    except Exception as e:
+        logging.warning(f"Haber çekilemedi ({symbol}): {e}")
+    return "Piyasa haberi bulunamadı."
+
 def get_stock_analysis(symbol):
     try:
         market_context = get_market_context()
@@ -579,13 +602,7 @@ def get_stock_analysis(symbol):
         last_price = float(data['Close'].iloc[-1])
         ind = calculate_indicators(data)
         
-        news_text = "Haber bulunamadı."
-        try:
-            news_list = ticker.news
-            if news_list:
-                titles = [n.get('title', 'Başlık yok') for n in news_list[:3]]
-                news_text = " | ".join(titles)
-        except: pass
+        news_text = get_stock_news(symbol)
 
         model = genai.GenerativeModel('gemini-3-flash-preview')
         prompt = f"""
@@ -601,6 +618,9 @@ def get_stock_analysis(symbol):
         
         Makro Durum: {macro_context}
         Endeks Durumu: {market_context}
+        
+        Piyasa Haberleri ve KAP Bildirimleri (Psikolojik & Temel Metin):
+        {news_text}
         
         Şirketin Temel Analizi (Bilançosu):
         {fundamental_context}
@@ -634,10 +654,77 @@ def get_stock_analysis(symbol):
         logging.error(f"Hata ({symbol}): {e}")
         return None
 
+def get_daily_prediction(symbol):
+    try:
+        market_context = get_market_context()
+        ticker_sym = f"{symbol.upper()}.IS"
+        data = yf.download(ticker_sym, period="1mo", interval="1d", progress=False, auto_adjust=True)
+        
+        if data.empty or len(data) < 2: return None
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+            
+        last_price = float(data['Close'].iloc[-1])
+        prev_close = float(data['Close'].iloc[-2]) if len(data) > 1 else last_price
+        prev_high  = float(data['High'].iloc[-2]) if len(data) > 1 else float(data['High'].iloc[-1])
+        prev_low   = float(data['Low'].iloc[-2]) if len(data) > 1 else float(data['Low'].iloc[-1])
+        
+        # Günlük Pivot, Destek ve Direnç hesaplama
+        pivot = (prev_high + prev_low + prev_close) / 3
+        r1 = (2 * pivot) - prev_low
+        s1 = (2 * pivot) - prev_high
+        r2 = pivot + (prev_high - prev_low)
+        s2 = pivot - (prev_high - prev_low)
+        
+        ind = calculate_indicators(data)
+        news_text = get_stock_news(symbol)
+        
+        model = genai.GenerativeModel('gemini-3-flash-preview')
+        prompt = f"""
+        Görev: Sen bir 'Day Trader' (Günlük Al-Satçı) uzmanısın. Bütün enerjin SADECE bugüne/yarına odaklı.
+        '{symbol}' hissesi için tamamen izole olarak, mevcut analiz mantığından bağımsız KISA VADELİ (GÜNLÜK) bir TAHMİN raporu yaz.
+        
+        KESİNLİKLE KURALLAR:
+        1. Hiçbir finansal jargon kullanma, piyasa diliyle ve halkın anlayacağı basit bir dille konuş. Tarafını belli et ('Yükselebilir', 'Düşüş tehlikesi var', 'Dalgalı/Yatay' vs).
+        2. Uzun vadeli bilanço veya temel analizlerden (F/K, Milyonluk karlar vs) ASLA bahsetme, senin işin SADECE bugünkü fiyat ve piyasa psikolojisi.
+        3. Verdiğim haberleri (KAP verilerini) okuyarak yatırımcı psikolojisini ölç.
+        4. Verdiğim hesaplanmış Destek/Direnç ve Pivot noktalarına doğrudan raporunda yer ver.
+        
+        Endeks Durumu: {market_context}
+        
+        Güncel Haber ve KAP (Piyasa Duygusu/Psikolojisi):
+        {news_text}
+        
+        Günlük Fiyat ve Göstergeler:
+        - Güncel Fiyat: {last_price} TL
+        - Dün Kapanış: {prev_close} TL
+        - RSI: {ind['rsi']} (Önceki gün: {ind['rsi_prev']})
+        - Algoritmik Günlük Durum: {ind['algo_signal']}
+        
+        Matematiksel Dönüş Noktaları (Klasik Pivot Formülü):
+        - Güç Noktası (Pivot): {round(pivot,2)} TL
+        - Destekler (S1, S2): {round(s1,2)} TL, {round(s2,2)} TL
+        - Dirençler (R1, R2): {round(r1,2)} TL, {round(r2,2)} TL
+        
+        Rapor Formatın:
+        🎯 *GÜNLÜK PİYASA HİSSİYATI*: (Haberlere ve momentum durumuna göre yatırımcı psikolojisi kısa vadede nasıl?)
+        ⚖️ *ÖNEMLİ İŞLEM SEVİYELERİ*:
+          - 🚧 *Pivot (Denge Çizgisi)*: {round(pivot,2)} TL (Altında veya üstünde kalmasına göre kısa vadeli yönünü yorumla)
+          - 🧱 *Destek*: {round(s1,2)} / {round(s2,2)}
+          - 🏔 *Direnç*: {round(r1,2)} / {round(r2,2)}
+        🔮 *GÜNÜN TAHMİNİ (KISA VADE)*: (Sadece bugün/1 hafta için yön tahmini yap ve net bir şekilde fikrini belirt.)
+        """
+        response = model.generate_content(prompt)
+        return {"price": round(last_price, 2), "analysis": sanitize_md(response.text)}
+    except Exception as e:
+        logging.error(f"Tahmin hatası ({symbol}): {e}")
+        return None
+
 # --- BOT KOMUTLARI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🔍 Hisse Analiz Et", callback_data='analiz_et')],
+        [InlineKeyboardButton("🔍 Hisse Analiz Et", callback_data='analiz_et'),
+         InlineKeyboardButton("📅 Günlük Tahmin", callback_data='tahmin_et')],
         [InlineKeyboardButton("📋 Takip Listem", callback_data='liste_goster'), 
          InlineKeyboardButton("🗓 Haftalık Rapor", callback_data='haftalik_rapor')],
         [InlineKeyboardButton("🔭 Fırsat Tarayıcı", callback_data='hisse_tara')],
@@ -674,6 +761,24 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(text)
     else:
         await msg.edit_text("❌ Veri bulunamadı. Lütfen sembolü (örn: THYAO) kontrol edin.")
+
+async def tahmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbol = context.args[0].upper() if context.args else None
+    if not symbol:
+        await update.message.reply_text("🚨 Lütfen sembol girin. Örn: `/tahmin thyao`", parse_mode='Markdown')
+        return
+    msg = await update.message.reply_text(f"⏳ *{symbol}* için Günlük Pivot/Yön Tahmini yapılıyor...", parse_mode='Markdown')
+    res = await asyncio.to_thread(get_daily_prediction, symbol)
+    if res:
+        keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
+        text = f"📈 *GÜNLÜK AL-SAT TAHMİN RAPORU: {symbol}*\n💰 Anlık Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
+        try:
+            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        except Exception as e:
+            logging.error(f"Mesaj edit hatası: {e}")
+            await msg.edit_text(text)
+    else:
+        await msg.edit_text("❌ Veri/Tahmin bulunamadı.")
 
 async def tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tüm BIST listesini tarayarak fırsat hisselerini listeler."""
@@ -716,6 +821,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == 'analiz_et':
         await query.message.reply_text("🔍 Analiz için sohbete direkt hisse kodunu yazabilirsiniz (Örn: THYAO).", parse_mode='Markdown')
+    elif data == 'tahmin_et':
+        await query.message.reply_text("📅 Günlük tahmin için sohbete `/tahmin HİSSE` kodunu yazabilirsiniz (Örn: `/tahmin THYAO`).", parse_mode='Markdown')
     elif data == 'liste_goster':
         watchlist = load_watchlist()
         text = "📋 *TAKİP LİSTESİ:*\n" + "\n".join([f"- {s}" for s in watchlist]) if watchlist else "📭 Liste boş."
@@ -797,6 +904,7 @@ if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analiz", analiz))
+    app.add_handler(CommandHandler("tahmin", tahmin))
     app.add_handler(CommandHandler("tara", tara))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_text))
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -836,6 +944,7 @@ if __name__ == '__main__':
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analiz", analiz))
+    app.add_handler(CommandHandler("tahmin", tahmin))
     app.add_handler(CommandHandler("tara", tara))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_text))
     app.add_handler(CallbackQueryHandler(button_handler))
