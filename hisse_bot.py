@@ -900,16 +900,7 @@ async def handle_regular_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.args = [text]
             await analiz(update, context)
 
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("analiz", analiz))
-    app.add_handler(CommandHandler("tahmin", tahmin))
-    app.add_handler(CommandHandler("tara", tara))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_text))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    print("Milyoner Trader Botu Aktif (Bütüncül Sürüm)!")
-    app.run_polling()
+
 
 
     # --- Mevcut kodlarının bittiği yerden itibaren (app.run_polling satırının öncesi) ---
@@ -921,13 +912,21 @@ import http.server
 import socketserver
 import threading
 
+class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        return
+
 def run_health_check_server():
     # Koyeb'in atadığı PORT'u al, yoksa 8000 kullan
     port = int(os.getenv("PORT", 8000))
-    handler = http.server.SimpleHTTPRequestHandler
     # 'allow_reuse_address' hata vermemesi için önemli
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", port), handler) as httpd:
+    with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
         print(f"✅ Koyeb Health Check sunucusu {port} portunda aktif.")
         httpd.serve_forever()
 
