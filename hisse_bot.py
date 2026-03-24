@@ -105,16 +105,14 @@ def get_all_bist_tickers():
     return BIST_SCAN_LIST # Fallback
 
 
-def quick_screen(symbol: str) -> dict | None:
+def quick_screen_calc(symbol: str, data: pd.DataFrame) -> dict | None:
     """
-    Hisseyi teknik ve temel kriterlere göre hızla puanlar (0-100).
-    Mevcut get_stock_analysis() fonksiyonuna dokunmaz.
+    Zaten indirilmiş olan DataFrame verisi (data) üzerinden 
+    teknik ve temel kriterlere göre hızla puanlar (0-100).
     İlk geçmesi gerekli zorunlu filtre: RSI < 58 (aşırı alım bölgesinde değil)
     """
     try:
         ticker_sym = f"{symbol}.IS"
-        data = yf.download(ticker_sym, period="6mo", interval="1d",
-                           progress=False, auto_adjust=True)
         if data.empty or len(data) < 15:
             return None
         if isinstance(data.columns, pd.MultiIndex):
@@ -291,16 +289,51 @@ def quick_screen(symbol: str) -> dict | None:
             "tags":   tags,
         }
     except Exception as e:
-        logging.warning(f"Tarama hatası ({symbol}): {e}")
+        logging.warning(f"Tarama hesaplama hatası ({symbol}): {e}")
         return None
 
+def quick_screen(symbol: str) -> dict | None:
+    """Tekil kullanım destekli wrapper."""
+    ticker_sym = f"{symbol}.IS"
+    data = yf.download(ticker_sym, period="6mo", interval="1d", progress=False, auto_adjust=True)
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+    return quick_screen_calc(symbol, data)
+
 def run_market_scan(scan_list: list[str]) -> list[dict]:
-    """Verilen listeyi tarar ve fırsat bulunanları puana göre sıralanış döndürür."""
+    """Tüm BIST listesini tek bir çoklu yfinance çağrısıyla çok daha hızlı tarar."""
     results = []
-    for sym in scan_list:
-        res = quick_screen(sym)
-        if res:
-            results.append(res)
+    if not scan_list:
+        return results
+        
+    try:
+        tickers = [f"{sym}.IS" for sym in scan_list]
+        # YFinance toplu indirme (grup by ticker sayesinde her hisse kendi OHLCV dataframe'ine sahip olur)
+        df = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', progress=False, auto_adjust=True, threads=True)
+        
+        is_multi = isinstance(df.columns, pd.MultiIndex)
+        
+        for sym in scan_list:
+            ticker_sym = f"{sym}.IS"
+            try:
+                if is_multi:
+                    # MultiIndex ('THYAO.IS', 'Close') vb. olduğu için direkt ilgili hisseyi seçebiliriz
+                    if ticker_sym not in df.columns.levels[0]:
+                        continue
+                    stock_data = df[ticker_sym].dropna(how='all')
+                else:
+                    # Sadece 1 hisse geldiyse dümdüz dataframe'dir
+                    stock_data = df.dropna(how='all')
+                    
+                res = quick_screen_calc(sym, stock_data)
+                if res:
+                    results.append(res)
+            except Exception as e:
+                logging.warning(f"Scan loop error ({sym}): {e}")
+                
+    except Exception as e:
+        logging.error(f"Bulk download error: {e}")
+
     return sorted(results, key=lambda x: x["score"], reverse=True)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
