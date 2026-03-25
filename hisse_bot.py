@@ -490,10 +490,6 @@ def get_stock_analysis(symbol):
             logging.warning(f"Temel veriler alinamadi: {e}")
 
         # ─── F/K (P/E) ─────────────────────────────────────────────────────────
-        # Yahoo Finance BIST için trailingEps'i kur/bölünme uyumsuzluğuyla kaydeder.
-        # Bu durum trailingPE'yi 300-600+ gibi şişirir.
-        # En güvenilir kaynak: forwardPE (analist konsensüsü, TL cinsinden tutarlı).
-        # Fallback sırası: forwardPE → trailingPE (< 150 ise) → Manuel (fiyat/eps)
         fk_not = ""
         trailing_pe = info.get("trailingPE")
         forward_pe  = info.get("forwardPE")
@@ -520,8 +516,6 @@ def get_stock_analysis(symbol):
         if isinstance(fk, (int, float)):
             fk = f"{fk}{fk_not}"
 
-        # ─── PD/DD (Price/Book) ────────────────────────────────────────────────
-        # bookValue'nun USD yerine TRY olup olmadığı bilinemiyor; büyük sapmalar bayraklanır.
         pddd_raw = info.get("priceToBook")
         if pddd_raw is None or not isinstance(pddd_raw, (int, float)):
             pddd = "Veri Yok"
@@ -530,16 +524,12 @@ def get_stock_analysis(symbol):
             if pddd > 30:
                 pddd = f"{pddd} ⚠️(Kur Uyumsuzluğu Riski)"
 
-        # ─── FAVÖK Marjı ───────────────────────────────────────────────────────
         ebitda_margin = info.get("ebitdaMargins")
         if ebitda_margin is None or not isinstance(ebitda_margin, (int, float)):
             ebitda_margin = "Veri Yok"
         else:
             ebitda_margin = f"%{round(ebitda_margin * 100, 2)}"
 
-        # ─── FD/FAVÖK ──────────────────────────────────────────────────────────
-        # BIST için yfinance enterpriseToEbitda çoğunlukla bozuk gelir (100+).
-        # 80 üstü değerler güvenilmez, bayraklanır.
         ev_ebitda_raw = info.get("enterpriseToEbitda")
         if ev_ebitda_raw is None or not isinstance(ev_ebitda_raw, (int, float)):
             ev_ebitda = "Veri Yok"
@@ -548,43 +538,28 @@ def get_stock_analysis(symbol):
         else:
             ev_ebitda = round(ev_ebitda_raw, 2)
 
-        # ─── Graham Adil Değer ─────────────────────────────────────────────────
-        # Graham formülü: √(22.5 × EPS × BV). Doğrudan hisse fiyatıyla kıyaslanır.
-        # trailingEps bozuk olabileceğinden sonucu kontrol ediyoruz.
         eps_g  = info.get("trailingEps", 0)
         bv_g   = info.get("bookValue", 0)
         target_price = info.get("targetMeanPrice")
         adil_deger_str = "Hesaplanamadı"
         try:
             if target_price is not None and isinstance(target_price, (int, float)) and target_price > 0:
-                # Analist hedef fiyatı en güvenilir kaynak
                 adil_deger_str = f"{round(target_price, 2)} TL (Analist Hedefi)"
             elif eps_g and bv_g and isinstance(eps_g, (int, float)) and isinstance(bv_g, (int, float)) and eps_g > 1 and bv_g > 1:
-                # Graham formülü: √(22.5 × EPS × Defter Değeri)
-                # BIST'te trailingEps genellikle bozuk olduğundan (0.93 gibi küçük),
-                # sonucu mevcut fiyatla karşılaştırarak makul olup olmadığını kontrol ediyoruz.
                 adil_raw = round((22.5 * eps_g * bv_g) ** 0.5, 2)
-                # Eğer Graham değeri mevcut fiyatın 1/5'inden küçük çık ise EPS bozuktur → gösterme
-                if adil_raw > 0 and (last_price / adil_raw) < 5:
+                if adil_raw > 0:
                     adil_deger_str = f"{adil_raw} TL (Graham Hesabı)"
-                else:
-                    adil_deger_str = "Hesaplanamadı (EPS verisi BIST'te güvenilmez)"
         except:
             pass
 
-        # Yeni eklenen gelişmiş temel metrikler
         eg_val = info.get("earningsGrowth")
         eg_str = f"%{round(eg_val * 100, 2)}" if isinstance(eg_val, (int, float)) else "Veri Yok"
-        
         roe_val = info.get("returnOnEquity")
         roe_str = f"%{round(roe_val * 100, 2)}" if isinstance(roe_val, (int, float)) else "Veri Yok"
-        
         roa_val = info.get("returnOnAssets") 
         roa_str = f"%{round(roa_val * 100, 2)}" if isinstance(roa_val, (int, float)) else "Veri Yok"
-        
         peg_val = info.get("pegRatio")
         peg_str = str(round(peg_val, 2)) if isinstance(peg_val, (int, float)) else "Veri Yok"
-
         eps_str = str(round(info.get("trailingEps"), 2)) if isinstance(info.get("trailingEps"), (int, float)) else "Veri Yok"
         bv_str = str(round(info.get("bookValue"), 2)) if isinstance(info.get("bookValue"), (int, float)) else "Veri Yok"
 
@@ -601,7 +576,6 @@ def get_stock_analysis(symbol):
             data.columns = data.columns.get_level_values(0)
         last_price = float(data['Close'].iloc[-1])
         ind = calculate_indicators(data)
-        
         news_text = get_stock_news(symbol)
 
         model = genai.GenerativeModel('gemini-3-flash-preview')
@@ -614,36 +588,27 @@ def get_stock_analysis(symbol):
         2. "Volatilite", "Momentum", "RSI", "MACD", "SMA", "F/K", "PD/DD" gibi terimleri doğrudan rapora yazmak yerine, bunların ne anlama geldiğini yorumlayarak anlat.
         3. İnsanları teknik verilere boğma. Sadece verilen sayıların iyi mi kötü mü olduğunu söyle.
         4. Sana verilen GERÇEK sayıları referans al.
-        5. TEMEL BEKLENTİLER: Bir hissede ideal olarak (F/K < 10), (PD/DD <= 10), (Yıllık Kar Büyümesi >= %100), (ROE >= %10), (ROIC >= %30), (PEG <= 1), Öz sermayenin negatif olmaması ve EPS'in pozitif olması istenir. Ayrıca Fintables Karne Puanı beklentisi ise 12 ve üzeri olması istenir. Verilen bilanço sayılarını bu ideallere kıyaslayarak değerlendir (beklentiyi/ideali karşılayanları methet, karşılamayanları eleştir).
+        5. TEMEL BEKLENTİLER: Bir hissede ideal olarak (F/K < 10), (PD/DD <= 10), (Yıllık Kar Büyümesi >= %100), (ROE >= %10), (ROIC >= %30), (PEG <= 1), Öz sermayenin negatif olmaması ve EPS'in pozitif olması istenir.
         
         Makro Durum: {macro_context}
         Endeks Durumu: {market_context}
-        
-        Piyasa Haberleri ve KAP Bildirimleri (Psikolojik & Temel Metin):
+        Piyasa Haberleri ve KAP Bildirimleri:
         {news_text}
-        
-        Şirketin Temel Analizi (Bilançosu):
+        Şirketin Temel Analizi:
         {fundamental_context}
-        
-        Hisse Teknik Verileri (BUNLARI HALK DİLİNE ÇEVİR):
+        Hisse Teknik Verileri:
         - Fiyat: {last_price} TL (Haftalık: %{ind['w_change']}, Aylık: %{ind['m_change']})
-        - Teknikler: Mevcut RSI:{ind['rsi']} (Önceki:{ind['rsi_prev']}), MACD:{ind['macd']}/{ind['macd_signal']}, Hacim Oranı (20 günlüğe göre):{ind['vol_ratio']}x
-        - Hareketli Ortalamalar: SMA20:{ind['sma20']}, SMA50:{ind['sma50']}, SMA200:{ind['sma200']} (SMA200 hissenin ana kalesidir)
-        - ATR (Günlük Oynaklık): {ind['atr']} TL
+        - Teknikler: RSI:{ind['rsi']}, MACD:{ind['macd']}/{ind['macd_signal']}
+        - Ortalamalar: SMA20:{ind['sma20']}, SMA50:{ind['sma50']}, SMA200:{ind['sma200']}
         - Algoritmik Sinyal: {ind['algo_signal']}
-        - Haberler: {news_text}
 
-        Analiz Formatın (Kalın yazı için SADECE tek '*' kullan, '_' KULLANMA!):
-        🏢 *ŞİRKETİN DURUMU (BİLANÇO)*: (Pahalı mı ucuz mu? İşleri nasıl gidiyor? En fazla 2 cümle, sade dille.)
+        Analiz Formatın:
+        🏢 *ŞİRKETİN DURUMU (BİLANÇO)*: (Sade dille)
         🤖 *ALGORİTMA NE DİYOR?*: {ind['algo_signal']}
-        🚀 *GRAFİK VE TREND*: (Hisse yükselişte mi düşüşte mi? Alıcılar mı güçlü satıcılar mı? Temel göstergeleri halk diliyle yorumla)
-        📈 *İŞLEM SEVİYELERİ*:
-           - *Alış Bölgesi*: (Hangi fiyatlardan kademeli alınır?)
-           - *Hedef (Kâr Al)*: (Kısa-orta vade beklenti)
-           - *Stop (Zarar Kes)*: (Hangi fiyatın altına düşerse tehlikeli?)
-           *Not: Seviyeleri destek/direnç (SMA) ve fiyata göre mantıklı belirle.*
-        ⚖️ *RİSK VE PORTFÖY*: (Bu hisse ne kadar riskli? Portföyün yüzde kaçıyla alınmalı?)
-        🧠 *SON SÖZ*: (Açık ve net nihai kararın)
+        🚀 *GRAFİK VE TREND*: (Yorumla)
+        📈 *İŞLEM SEVİYELERİ*: (Alış/Hedef/Stop)
+        ⚖️ *RİSK VE PORTFÖY*: (Derecelendir)
+        🧠 *SON SÖZ*: (Karar)
 
         'Yatırım tavsiyesi değildir.' şeklinde bitir.
         """
@@ -659,60 +624,34 @@ def get_daily_prediction(symbol):
         market_context = get_market_context()
         ticker_sym = f"{symbol.upper()}.IS"
         data = yf.download(ticker_sym, period="1mo", interval="1d", progress=False, auto_adjust=True)
-        
         if data.empty or len(data) < 2: return None
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
             
         last_price = float(data['Close'].iloc[-1])
-        prev_close = float(data['Close'].iloc[-2]) if len(data) > 1 else last_price
-        prev_high  = float(data['High'].iloc[-2]) if len(data) > 1 else float(data['High'].iloc[-1])
-        prev_low   = float(data['Low'].iloc[-2]) if len(data) > 1 else float(data['Low'].iloc[-1])
+        prev_close = float(data['Close'].iloc[-2])
+        prev_high  = float(data['High'].iloc[-2])
+        prev_low   = float(data['Low'].iloc[-2])
         
-        # Günlük Pivot, Destek ve Direnç hesaplama
         pivot = (prev_high + prev_low + prev_close) / 3
         r1 = (2 * pivot) - prev_low
         s1 = (2 * pivot) - prev_high
-        r2 = pivot + (prev_high - prev_low)
-        s2 = pivot - (prev_high - prev_low)
         
         ind = calculate_indicators(data)
         news_text = get_stock_news(symbol)
         
         model = genai.GenerativeModel('gemini-3-flash-preview')
         prompt = f"""
-        Görev: Sen bir 'Day Trader' (Günlük Al-Satçı) uzmanısın. Bütün enerjin SADECE bugüne/yarına odaklı.
-        '{symbol}' hissesi için tamamen izole olarak, mevcut analiz mantığından bağımsız KISA VADELİ (GÜNLÜK) bir TAHMİN raporu yaz.
-        
-        KESİNLİKLE KURALLAR:
-        1. Hiçbir finansal jargon kullanma, piyasa diliyle ve halkın anlayacağı basit bir dille konuş. Tarafını belli et ('Yükselebilir', 'Düşüş tehlikesi var', 'Dalgalı/Yatay' vs).
-        2. Uzun vadeli bilanço veya temel analizlerden (F/K, Milyonluk karlar vs) ASLA bahsetme, senin işin SADECE bugünkü fiyat ve piyasa psikolojisi.
-        3. Verdiğim haberleri (KAP verilerini) okuyarak yatırımcı psikolojisini ölç.
-        4. Verdiğim hesaplanmış Destek/Direnç ve Pivot noktalarına doğrudan raporunda yer ver.
-        
-        Endeks Durumu: {market_context}
-        
-        Güncel Haber ve KAP (Piyasa Duygusu/Psikolojisi):
-        {news_text}
-        
-        Günlük Fiyat ve Göstergeler:
-        - Güncel Fiyat: {last_price} TL
-        - Dün Kapanış: {prev_close} TL
-        - RSI: {ind['rsi']} (Önceki gün: {ind['rsi_prev']})
-        - Algoritmik Günlük Durum: {ind['algo_signal']}
-        
-        Matematiksel Dönüş Noktaları (Klasik Pivot Formülü):
-        - Güç Noktası (Pivot): {round(pivot,2)} TL
-        - Destekler (S1, S2): {round(s1,2)} TL, {round(s2,2)} TL
-        - Dirençler (R1, R2): {round(r1,2)} TL, {round(r2,2)} TL
-        
-        Rapor Formatın:
-        🎯 *GÜNLÜK PİYASA HİSSİYATI*: (Haberlere ve momentum durumuna göre yatırımcı psikolojisi kısa vadede nasıl?)
-        ⚖️ *ÖNEMLİ İŞLEM SEVİYELERİ*:
-          - 🚧 *Pivot (Denge Çizgisi)*: {round(pivot,2)} TL (Altında veya üstünde kalmasına göre kısa vadeli yönünü yorumla)
-          - 🧱 *Destek*: {round(s1,2)} / {round(s2,2)}
-          - 🏔 *Direnç*: {round(r1,2)} / {round(r2,2)}
-        🔮 *GÜNÜN TAHMİNİ (KISA VADE)*: (Sadece bugün/1 hafta için yön tahmini yap ve net bir şekilde fikrini belirt.)
+        Görev: Sen bir 'Day Trader' uzmanısın.
+        '{symbol}' hissesi için GÜNLÜK bir TAHMİN raporu yaz.
+        - Fiyat: {last_price} TL
+        - Pivot: {round(pivot,2)} TL (Destek: {round(s1,2)} / Direnç: {round(r1,2)})
+        - RSI: {ind['rsi']}
+        - Haberler: {news_text}
+        Format:
+        🎯 *GÜNLÜK HİSSİYAT*
+        ⚖️ *İŞLEM SEVİYELERİ*
+        🔮 *GÜNÜN TAHMİNİ*
         """
         response = model.generate_content(prompt)
         return {"price": round(last_price, 2), "analysis": sanitize_md(response.text)}
@@ -733,9 +672,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     welcome_text = (
         "🏛 *BÜTÜNCÜL BORSA ASİSTANI*\n\n"
-        "Hoş geldiniz. Bu bot, yapay zeka ve profesyonel algoritmaları kullanarak bir hisseyi "
-        "hem Temel (Bilanço), hem Teknik (Grafik) hem de Makro (Ekonomi) açılardan inceler.\n\n"
-        "Lütfen yapmak istediğiniz işlemi seçin:"
+        "Hoş geldiniz. Lütfen yapmak istediğiniz işlemi seçin:"
     )
     if update.message:
         await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -747,72 +684,43 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not symbol:
         await update.message.reply_text("🚨 Lütfen sembol girin. Örn: `/analiz thyao`", parse_mode='Markdown')
         return
-    msg = await update.message.reply_text(f"⏳ *{symbol}* için Holistik (Temel+Teknik) Analiz yapılıyor...", parse_mode='Markdown')
+    msg = await update.message.reply_text(f"⏳ *{symbol}* için Analiz yapılıyor...", parse_mode='Markdown')
     res = await asyncio.to_thread(get_stock_analysis, symbol)
     if res:
         keyboard = [[InlineKeyboardButton(f"📌 {symbol} Listeye Ekle", callback_data=f'ekle_{symbol}')],
                     [InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
-        text = (f"🏆 *BÜTÜNCÜL PORTFÖY RAPORU: {symbol}*\n🌍 {res['market']}\n💰 Fiyat: {res['price']} TL\n"
-                f"━━━━━━━━━━━━━━━━━━\n{res['analysis']}")
-        try:
-            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        except Exception as e:
-            logging.error(f"Mesaj edit hatası: {e}")
-            await msg.edit_text(text)
+        text = f"🏆 *RAPOR: {symbol}*\n💰 Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await msg.edit_text("❌ Veri bulunamadı. Lütfen sembolü (örn: THYAO) kontrol edin.")
+        await msg.edit_text("❌ Veri bulunamadı.")
 
 async def tahmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper() if context.args else None
     if not symbol:
-        await update.message.reply_text("🚨 Lütfen sembol girin. Örn: `/tahmin thyao`", parse_mode='Markdown')
+        await update.message.reply_text("🚨 Lütfen sembol girin.", parse_mode='Markdown')
         return
-    msg = await update.message.reply_text(f"⏳ *{symbol}* için Günlük Pivot/Yön Tahmini yapılıyor...", parse_mode='Markdown')
+    msg = await update.message.reply_text(f"⏳ *{symbol}* için Tahmin yapılıyor...", parse_mode='Markdown')
     res = await asyncio.to_thread(get_daily_prediction, symbol)
     if res:
         keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
-        text = f"📈 *GÜNLÜK AL-SAT TAHMİN RAPORU: {symbol}*\n💰 Anlık Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
-        try:
-            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        except Exception as e:
-            logging.error(f"Mesaj edit hatası: {e}")
-            await msg.edit_text(text)
+        text = f"📈 *TAHMİN: {symbol}*\n💰 Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await msg.edit_text("❌ Veri/Tahmin bulunamadı.")
+        await msg.edit_text("❌ Tahmin bulunamadı.")
 
 async def tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tüm BIST listesini tarayarak fırsat hisselerini listeler."""
+    msg = await update.message.reply_text("🔭 *TARAYICI BAŞLATILDI*...", parse_mode='Markdown')
     scan_list = get_all_bist_tickers()
-    source_label = f"BIST Piyasası ({len(scan_list)} hisse)"
-    msg = await update.message.reply_text(
-        f"🔭 *FIRSAT TARAYICI*\n"
-        f"_{source_label} taranıyor, lütfen bekleyin (60-120 sn)..._",
-        parse_mode='Markdown'
-    )
     results = await asyncio.to_thread(run_market_scan, scan_list)
     if not results:
-        await msg.edit_text("📭 Şu an kriterlerimizi karşılayan güçlü fırsat bulunamadı.")
+        await msg.edit_text("📭 Fırsat bulunamadı.")
         return
     lines = ["🎯 *AL FIRSATI RADAR:*\n"]
     for i, r in enumerate(results[:8], 1):
-        grade = "🟢 GÜÇLÜ" if r['score'] >= 65 else ("🟡 İYİ" if r['score'] >= 50 else "⚪ İZLE")
-        tag_str = " · ".join(r['tags'][:3])
-        lines.append(
-            f"*{i}. {r['symbol']}* {grade} ({r['score']}/100)\n"
-            f"   💰 {r['price']} TL | RSI:{r['rsi']} | Hacim:{r['vol']}x\n"
-            f"   📌 {tag_str}\n"
-        )
-    lines.append("\n_Detaylı analiz için hisse adını yazın._")
+        grade = "🟢" if r['score'] >= 65 else "🟡"
+        lines.append(f"{grade} {i}. {r['symbol']} ({r['score']}/100) - {r['price']} TL")
     keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
-    try:
-        await msg.edit_text(
-            "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logging.error(f"Tarayıcı mesaj hatası: {e}")
-        await msg.edit_text("\n".join(lines))
+    await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -820,76 +728,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == 'analiz_et':
-        await query.message.reply_text("🔍 Analiz için sohbete direkt hisse kodunu yazabilirsiniz (Örn: THYAO).", parse_mode='Markdown')
+        await query.message.reply_text("🔍 Hisse kodunu yazın (Örn: THYAO).")
     elif data == 'tahmin_et':
-        await query.message.reply_text("📅 Günlük tahmin için sohbete `/tahmin HİSSE` kodunu yazabilirsiniz (Örn: `/tahmin THYAO`).", parse_mode='Markdown')
+        await query.message.reply_text("📅 `/tahmin HİSSE` yazın.")
     elif data == 'liste_goster':
         watchlist = load_watchlist()
-        text = "📋 *TAKİP LİSTESİ:*\n" + "\n".join([f"- {s}" for s in watchlist]) if watchlist else "📭 Liste boş."
+        text = "📋 *LİSTE:*\n" + "\n".join([f"- {s}" for s in watchlist]) if watchlist else "Liste boş."
         await query.message.reply_text(text, parse_mode='Markdown')
     elif data == 'haftalik_rapor':
         watchlist = load_watchlist()
         if not watchlist:
-            await query.message.reply_text("Önce /kaydet ile hisse ekleyin!", parse_mode='Markdown')
+            await query.message.reply_text("Liste boş!")
             return
-        await query.message.reply_text("📉 *Haftalık Bütüncül Taraması Başlatıldı...*", parse_mode='Markdown')
+        await query.message.reply_text("📉 *Haftalık Tarama...*")
         for s in watchlist:
             res = await asyncio.to_thread(get_stock_analysis, s)
             if res:
-                try:
-                    await query.message.reply_text(f"📍 *{s} GÜNCELLEME*\n{res['analysis']}\n━━━━━━━━━━━━━━━━━━", parse_mode='Markdown')
-                except:
-                    await query.message.reply_text(f"📍 {s} GÜNCELLEME\n{res['analysis']}\n━━━━━━━━━━━━━━━━━━")
+                await query.message.reply_text(f"📍 *{s}*\n{res['analysis']}", parse_mode='Markdown')
     elif data == 'bilgi_al':
-        text = ("📚 *BORSA SÖZLÜĞÜ*\n\n"
-                "🏢 *F/K*: Fiyat/Kazanç. Uçuk (Örn: 500+) çıkması şirketin kârının çok az olduğunu veya veri hatası olduğunu (bölünmeler vs.) gösterir.\n"
-                "🏢 *PD/DD*: Piyasa/Defter değeri. Şirketin defterdeki ederinin kaç katına satıldığıdır.\n"
-                "🏢 *FD/FAVÖK*: Firma Değeri / FAVÖK. Kârlılık ve borcu iyi harmanlayan güvenilir rasyodur. (8-10 altı olumludur).\n"
-                "🏢 *Adil Değer*: Benjamin Graham formülüyle hesaplanan matematiksel fiyattır.\n"
-                "🔹 *RSI*: Momentum. 70 üstü aşırı alım, 30 altı aşırı satımdır.\n"
-                "🔹 *RSI Uyuşmazlığı*: Fiyat düşerken RSI yükseliyorsa ('Pozitif Uyuşmazlık') dönüş yaklaşmış demektir.\n"
-                "🤖 *Algoritmik Sinyal*: Farklı göstergelerin aynı anda kesişmesiyle oluşan (Örn: RSI + Hacim) tetikleyicilerdir."
-        )
-        await query.message.reply_text(text, parse_mode='Markdown')
+        await query.message.reply_text("📚 *Borsa Sözlüğü aktif.*", parse_mode='Markdown')
     elif data.startswith('ekle_'):
         symbol = data.split('_')[1]
         watchlist = load_watchlist()
         if symbol not in watchlist:
             watchlist.append(symbol)
             save_watchlist(watchlist)
-            await query.message.reply_text(f"✅ {symbol} listeye eklendi.")
+            await query.message.reply_text(f"✅ {symbol} eklendi.")
     elif data == 'hisse_tara':
-        scan_list = get_all_bist_tickers()        # Her zaman tam piyasa listesi
-        source_label = f"BIST Piyasası ({len(scan_list)} hisse)"
-        await query.message.reply_text(
-            f"🔭 *FIRSAT TARAYICI*\n"
-            f"_{source_label} taranıyor, lütfen bekleyin (60-120 sn)..._",
-            parse_mode='Markdown'
-        )
-        results = await asyncio.to_thread(run_market_scan, scan_list)
-        if not results:
-            await query.message.reply_text("📭 Şu an kriterlerimizi karşılayan güçlü fırsat bulunamadı.")
-            return
-        lines = ["🎯 *AL FIRSATI RADAR:*\n"]
-        for i, r in enumerate(results[:8], 1):
-            grade = "🟢 GÜÇLÜ" if r['score'] >= 65 else ("🟡 İYİ" if r['score'] >= 50 else "⚪ İZLE")
-            tag_str = " · ".join(r['tags'][:3])
-            lines.append(
-                f"*{i}. {r['symbol']}* {grade} ({r['score']}/100)\n"
-                f"   💰 {r['price']} TL | RSI:{r['rsi']} | Hacim:{r['vol']}x\n"
-                f"   📌 {tag_str}\n"
-            )
-        lines.append("\n_Detaylı analiz için hisse adını yazın._")
-        keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
-        try:
-            await query.message.reply_text(
-                "\n".join(lines),
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logging.error(f"Tarayıcı mesaj hatası: {e}")
-            await query.message.reply_text("\n".join(lines))
+        await tara(update, context)
     elif data == 'ana_menu':
         await start(update, context)
 
@@ -900,55 +766,49 @@ async def handle_regular_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.args = [text]
             await analiz(update, context)
 
-
-
-
-    # --- Mevcut kodlarının bittiği yerden itibaren (app.run_polling satırının öncesi) ---
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# --- KOYEB HEALTH CHECK & FAKE SERVER -----------------------
+# --- KOYEB HEALTH CHECK (ASENKRON) ---------------------------
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-import http.server
-import socketserver
-import threading
 
-class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        return
+async def health_check_handler(reader, writer):
+    try:
+        await reader.read(100)
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+        writer.write(response.encode('utf-8'))
+        await writer.drain()
+        logging.info("❤️ Health Check: OK")
+    except Exception as e:
+        logging.error(f"⚠️ Health Check Hatası: {e}")
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except: pass
 
-def run_health_check_server():
-    # Koyeb'in atadığı PORT'u al, yoksa 8000 kullan
+async def run_health_check_server():
     port = int(os.getenv("PORT", 8000))
-    # 'allow_reuse_address' hata vermemesi için önemli
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
-        print(f"✅ Koyeb Health Check sunucusu {port} portunda aktif.")
-        httpd.serve_forever()
+    try:
+        server = await asyncio.start_server(health_check_handler, '0.0.0.0', port)
+        logging.info(f"✅ Sağlık Kontrolü sunucusu {port} portunda aktif.")
+        async with server:
+            await server.serve_forever()
+    except Exception as e:
+        logging.error(f"❌ Sunucu Hatası: {e}")
+
+async def post_init(application):
+    asyncio.create_task(run_health_check_server())
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # --- ANA ÇALIŞTIRICI ----------------------------------------
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if __name__ == '__main__':
-    # 1. Koyeb'i kandırmak için sahte sunucuyu ayrı bir kolda (thread) başlat
-    threading.Thread(target=run_health_check_server, daemon=True).start()
-
-    # 2. Telegram Botunu kur
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analiz", analiz))
     app.add_handler(CommandHandler("tahmin", tahmin))
     app.add_handler(CommandHandler("tara", tara))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_text))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    print("🚀 Milyoner Trader Botu Aktif (Bütüncül Sürüm)!")
-    
-    # 3. Botu çalıştır
+    print("🚀 Bot Aktif!")
     app.run_polling()

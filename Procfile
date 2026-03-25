@@ -1,1 +1,1 @@
-worker: python3 hisse_bot.py
+web: python hisse_bot.py
