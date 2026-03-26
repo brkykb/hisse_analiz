@@ -309,8 +309,8 @@ def run_market_scan(scan_list: list[str]) -> list[dict]:
         
     try:
         tickers = [f"{sym}.IS" for sym in scan_list]
-        # YFinance toplu indirme (grup by ticker sayesinde her hisse kendi OHLCV dataframe'ine sahip olur)
-        df = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', progress=False, auto_adjust=True, threads=True)
+        # YFinance toplu indirme (Koyeb gibi sınırlı ortamlarda thread sayısını kısıtlıyoruz)
+        df = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', progress=False, auto_adjust=True, threads=10)
         
         is_multi = isinstance(df.columns, pd.MultiIndex)
         
@@ -772,7 +772,7 @@ async def handle_regular_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def health_check_handler(reader, writer):
     try:
-        await reader.read(100)
+        # reader.read(100) yerine sadece yanıt veriyoruz, bağlantıyı kapatıyoruz.
         response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
         writer.write(response.encode('utf-8'))
         await writer.drain()
@@ -780,8 +780,8 @@ async def health_check_handler(reader, writer):
     except Exception as e:
         logging.error(f"⚠️ Health Check Hatası: {e}")
     finally:
-        writer.close()
         try:
+            writer.close()
             await writer.wait_closed()
         except: pass
 
@@ -791,19 +791,34 @@ async def run_health_check_server():
         server = await asyncio.start_server(health_check_handler, '0.0.0.0', port)
         logging.info(f"✅ Sağlık Kontrolü sunucusu {port} portunda aktif.")
         async with server:
-            await server.serve_forever()
+            try:
+                await server.serve_forever()
+            except asyncio.CancelledError:
+                logging.info("🛑 Sağlık kontrolü sunucusu durduruluyor...")
     except Exception as e:
         logging.error(f"❌ Sunucu Hatası: {e}")
 
 async def post_init(application):
-    asyncio.create_task(run_health_check_server())
+    # Görevi bot_data içinde saklayarak kapanışta iptal edebilmeyi sağlıyoruz.
+    application.bot_data["health_task"] = asyncio.create_task(run_health_check_server())
+
+async def post_stop(application):
+    # Uygulama durduğunda sağlık sunucusu görevini de sonlandırıyoruz.
+    task = application.bot_data.get("health_task")
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        logging.info("✅ Sağlık kontrolü sunucusu tamamen kapatıldı.")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # --- ANA ÇALIŞTIRICI ----------------------------------------
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).post_stop(post_stop).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analiz", analiz))
     app.add_handler(CommandHandler("tahmin", tahmin))
