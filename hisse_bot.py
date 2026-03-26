@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from telegram.error import BadRequest
 
 # --- KONFİGÜRASYON ---
 load_dotenv()
@@ -449,7 +450,12 @@ def calculate_indicators(data):
     }
 
 def sanitize_md(text):
+    if not text: return ""
+    # Standardize bold (Legacy Markdown uses *bold* not **bold**)
     text = text.replace("**", "*")
+    # Replace bullet point characters with safe ones
+    text = re.sub(r"^\s*[*+-]\s+", "• ", text, flags=re.MULTILINE)
+    # Replace other problematic formatting characters
     text = text.replace("_", "-") 
     text = text.replace("`", "'")
     return text
@@ -611,6 +617,10 @@ def get_stock_analysis(symbol):
         🧠 *SON SÖZ*: (Karar)
 
         'Yatırım tavsiyesi değildir.' şeklinde bitir.
+        
+        ÖNEMLİ: Madde işaretleri için sadece '•' karakterini kullan, '*' veya '-' kullanma. 
+        Kalın yazmak için kelimeyi '*' içine al (Örn: *Kelime*). 
+        Markdown formatında unclosed (kapatılmamış) yıldız bırakma.
         """
         response = model.generate_content(prompt)
         safe_response = sanitize_md(response.text)
@@ -652,6 +662,10 @@ def get_daily_prediction(symbol):
         🎯 *GÜNLÜK HİSSİYAT*
         ⚖️ *İŞLEM SEVİYELERİ*
         🔮 *GÜNÜN TAHMİNİ*
+        
+        ÖNEMLİ: Madde işaretleri için sadece '•' karakterini kullan, '*' veya '-' kullanma.
+        Kalın yazmak için kelimeyi '*' içine al (Örn: *Kelime*).
+        Markdown formatında unclosed (kapatılmamış) yıldız bırakma.
         """
         response = model.generate_content(prompt)
         return {"price": round(last_price, 2), "analysis": sanitize_md(response.text)}
@@ -690,7 +704,13 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton(f"📌 {symbol} Listeye Ekle", callback_data=f'ekle_{symbol}')],
                     [InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
         text = f"🏆 *RAPOR: {symbol}*\n💰 Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        try:
+            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        except BadRequest as e:
+            if "Can't parse entities" in str(e):
+                await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                raise e
     else:
         await msg.edit_text("❌ Veri bulunamadı.")
 
@@ -704,7 +724,13 @@ async def tahmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if res:
         keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
         text = f"📈 *TAHMİN: {symbol}*\n💰 Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        try:
+            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        except BadRequest as e:
+            if "Can't parse entities" in str(e):
+                await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                raise e
     else:
         await msg.edit_text("❌ Tahmin bulunamadı.")
 
@@ -720,7 +746,13 @@ async def tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
         grade = "🟢" if r['score'] >= 65 else "🟡"
         lines.append(f"{grade} {i}. {r['symbol']} ({r['score']}/100) - {r['price']} TL")
     keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
-    await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    try:
+        await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    except BadRequest as e:
+        if "Can't parse entities" in str(e):
+            await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            raise e
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -744,7 +776,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for s in watchlist:
             res = await asyncio.to_thread(get_stock_analysis, s)
             if res:
-                await query.message.reply_text(f"📍 *{s}*\n{res['analysis']}", parse_mode='Markdown')
+                text = f"📍 *{s}*\n{res['analysis']}"
+                try:
+                    await query.message.reply_text(text, parse_mode='Markdown')
+                except BadRequest as e:
+                    if "Can't parse entities" in str(e):
+                        await query.message.reply_text(text)
+                    else:
+                        raise e
     elif data == 'bilgi_al':
         await query.message.reply_text("📚 *Borsa Sözlüğü aktif.*", parse_mode='Markdown')
     elif data.startswith('ekle_'):
