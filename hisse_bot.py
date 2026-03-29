@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import google.generativeai as genai
 import logging
+import traceback
 import os
 import json
 import re
@@ -588,9 +589,21 @@ def get_stock_analysis(symbol):
         )
 
         data = yf.download(ticker_sym, period="1y", interval="1d", progress=False, auto_adjust=True)
-        if data.empty: return None
+        if data.empty:
+            logging.warning(f"⚠️ {ticker_sym} için fiyat verisi boş döndü.")
+            return None
+            
+        # Robust MultiIndex Handling
         if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+            if 'Close' in data.columns.get_level_values(0):
+                data.columns = data.columns.get_level_values(0)
+            else:
+                data.columns = data.columns.get_level_values(1)
+        
+        if 'Close' not in data.columns:
+            logging.error(f"❌ {ticker_sym} verisinde 'Close' sütunu bulunamadı. Mevcut: {data.columns}")
+            return None
+
         last_price = float(data['Close'].iloc[-1])
         ind = calculate_indicators(data)
         news_text = get_stock_news(symbol)
@@ -640,7 +653,8 @@ def get_stock_analysis(symbol):
         safe_response = sanitize_md(response.text)
         return {"price": round(last_price, 2), "ind": ind, "analysis": safe_response, "market": market_context}
     except Exception as e:
-        logging.error(f"Hata ({symbol}): {e}")
+        logging.error(f"❌ Analiz Hatası ({symbol}): {e}")
+        logging.error(traceback.format_exc())
         return None
 
 def get_daily_prediction(symbol):
@@ -648,9 +662,19 @@ def get_daily_prediction(symbol):
         market_context = get_market_context()
         ticker_sym = f"{symbol.upper()}.IS"
         data = yf.download(ticker_sym, period="1mo", interval="1d", progress=False, auto_adjust=True)
-        if data.empty or len(data) < 2: return None
+        if data.empty or len(data) < 2:
+            logging.warning(f"⚠️ {ticker_sym} için yetersiz veri.")
+            return None
+            
+        # Robust MultiIndex Handling
         if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+            if 'Close' in data.columns.get_level_values(0):
+                data.columns = data.columns.get_level_values(0)
+            else:
+                data.columns = data.columns.get_level_values(1)
+
+        if 'Close' not in data.columns:
+            return None
             
         last_price = float(data['Close'].iloc[-1])
         prev_close = float(data['Close'].iloc[-2])
@@ -704,7 +728,8 @@ def get_daily_prediction(symbol):
         response = model.generate_content(prompt)
         return {"price": round(last_price, 2), "analysis": sanitize_md(response.text)}
     except Exception as e:
-        logging.error(f"Tahmin hatası ({symbol}): {e}")
+        logging.error(f"❌ Tahmin Hatası ({symbol}): {e}")
+        logging.error(traceback.format_exc())
         return None
 
 # --- BOT KOMUTLARI ---
