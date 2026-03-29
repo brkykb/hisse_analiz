@@ -1,4 +1,4 @@
-# Telegram Bot Framework
+# Telegram Bot Framework (Moderately Modern)
 python-telegram-bot
 
 # Finansal Veri Çekme
@@ -8,6 +8,9 @@ yfinance
 pandas
 numpy
 
+# Web Scraping & Haberler (BIST listesi ve News için)
+beautifulsoup4
+
 # Google Gemini AI Entegrasyonu
 google-generativeai
 
@@ -16,3 +19,6 @@ httpx
 
 # Çevresel Değişkenler
 python-dotenv
+
+# Render Keep-Alive (Health Check)
+flask
