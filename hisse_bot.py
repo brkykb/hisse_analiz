@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram.error import BadRequest
+from flask import Flask
+from threading import Thread
 
 # --- KONFİGÜRASYON ---
 load_dotenv()
@@ -569,11 +571,20 @@ def get_stock_analysis(symbol):
         eps_str = str(round(info.get("trailingEps"), 2)) if isinstance(info.get("trailingEps"), (int, float)) else "Veri Yok"
         bv_str = str(round(info.get("bookValue"), 2)) if isinstance(info.get("bookValue"), (int, float)) else "Veri Yok"
 
+        # ─── ROIC (Sermaye Yatırım Getirisi) ──────────────────────────────────
+        # Proxy: (EBITDA / (Total Assets - Current Liabilities)) if possible, 
+        # but yfinance info is limited. Using returnOnAssets as a conservative proxy.
+        roic_val = info.get("returnOnInvestedCapital") or info.get("returnOnAssets")
+        roic_str = f"%{round(roic_val * 100, 2)}" if isinstance(roic_val, (int, float)) else "Veri Yok"
+
         fundamental_context = (
-            f"F/K: {fk} | PD/DD: {pddd} | Hisse Başına Kar (EPS): {eps_str} | Öz Sermaye (Defter Değeri): {bv_str}\n"
-            f"FAVÖK Marjı: {ebitda_margin} | FD/FAVÖK: {ev_ebitda} | Adil Değer: {adil_deger_str}\n"
-            f"Yıllık Kar Büyümesi: {eg_str} | Özkaynak Karlılığı (ROE): {roe_str} | ROIC (Zımni ROA): {roa_str}\n"
-            f"PEG Oranı: {peg_str}"
+            f"Çarpan Değeri (P/E & P/B): F/K: {fk} | PD/DD: {pddd}\n"
+            f"Adil Değer (Fair Value): {adil_deger_str}\n"
+            f"Sermaye Yatırım Getirisi (ROIC): {roic_str}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Hisse Başına Kar (EPS): {eps_str} | Öz Sermaye (Defter Değeri): {bv_str}\n"
+            f"FAVÖK Marjı: {ebitda_margin} | FD/FAVÖK: {ev_ebitda}\n"
+            f"Yıllık Kar Büyümesi: {eg_str} | Özkaynak Karlılığı (ROE): {roe_str} | PEG Oranı: {peg_str}"
         )
 
         data = yf.download(ticker_sym, period="1y", interval="1d", progress=False, auto_adjust=True)
@@ -589,6 +600,9 @@ def get_stock_analysis(symbol):
         Görev: Sen deneyimli ama halk dilinden konuşan, samimi bir Borsa Analistisin. 
         Aşağıdaki verileri kullanarak '{symbol}' hissesi için BÜTÜNCÜL (Holistik) bir rapor yaz.
         
+        ÖNEMLİ (BAŞLANGIÇ): Raporuna mutlaka en başta Çarpan Değeri, Adil Değer ve Sermaye Yatırım Getirisi (ROIC) verilerini net bir şekilde belirterek başla. 
+        Mevcut fiyatın Adil Değer'e göre ucuz mu pahalı mı olduğunu ve ROIC'in şirketin verimliliği hakkında ne dediğini (örn: %30 üstü harika, %15 altı zayıf vb.) basitçe yorumla.
+
         KESİNLİKLE DİKKAT ETMEN GEREKENLER (KURALLAR):
         1. ASLA karmaşık finansal kelimeler (jargon) kullanma. Normal, borsaya yeni başlamış bir insanın anlayacağı kadar BASİT ve SADE anlat.
         2. "Volatilite", "Momentum", "RSI", "MACD", "SMA", "F/K", "PD/DD" gibi terimleri doğrudan rapora yazmak yerine, bunların ne anlama geldiğini yorumlayarak anlat.
@@ -647,6 +661,22 @@ def get_daily_prediction(symbol):
         r1 = (2 * pivot) - prev_low
         s1 = (2 * pivot) - prev_high
         
+        # Günlük Tahmin için de Temel Verileri Çekelim
+        try:
+            info = yf.Ticker(ticker_sym).info
+            fk = info.get("forwardPE") or info.get("trailingPE") or "Veri Yok"
+            pddd = info.get("priceToBook") or "Veri Yok"
+            roic = info.get("returnOnInvestedCapital") or info.get("returnOnAssets") or 0.0
+            target = info.get("targetMeanPrice") or "Hesaplanamadı"
+            
+            fundamental_summary = (
+                f"Çarpan Değeri: {fk} (F/K), {pddd} (PD/DD) | "
+                f"Adil Değer: {target} TL | "
+                f"Sermaye Yatırım Getirisi (ROIC): %{round(roic*100,2) if roic else 'Veri Yok'}"
+            )
+        except:
+            fundamental_summary = "Temel veri alınamadı."
+
         ind = calculate_indicators(data)
         news_text = get_stock_news(symbol)
         
@@ -654,9 +684,13 @@ def get_daily_prediction(symbol):
         prompt = f"""
         Görev: Sen bir 'Day Trader' uzmanısın.
         '{symbol}' hissesi için GÜNLÜK bir TAHMİN raporu yaz.
+        
+        ÖNEMLİ: Tahminine başlarken Çarpan Değeri, Adil Değer ve ROIC verilerini göz önünde bulundurarak hissenin bugün için 'pahalı' mı 'ucuz' mu olduğunu kısaca hissettir.
+        
         - Fiyat: {last_price} TL
         - Pivot: {round(pivot,2)} TL (Destek: {round(s1,2)} / Direnç: {round(r1,2)})
         - RSI: {ind['rsi']}
+        - Temel Durum: {fundamental_summary}
         - Haberler: {news_text}
         Format:
         🎯 *GÜNLÜK HİSSİYAT*
@@ -805,59 +839,28 @@ async def handle_regular_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.args = [text]
             await analiz(update, context)
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# --- KOYEB HEALTH CHECK (ASENKRON) ---------------------------
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# --- RENDER KEEP ALIVE (FLASK) ---
+flask_app = Flask('')
 
-async def health_check_handler(reader, writer):
-    try:
-        # reader.read(100) yerine sadece yanıt veriyoruz, bağlantıyı kapatıyoruz.
-        response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
-        writer.write(response.encode('utf-8'))
-        await writer.drain()
-        logging.info("❤️ Health Check: OK")
-    except Exception as e:
-        logging.error(f"⚠️ Health Check Hatası: {e}")
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except: pass
+@flask_app.route('/')
+def home():
+    return "Bot aktif ve çalışıyor!"
 
-async def run_health_check_server():
-    port = int(os.getenv("PORT", 8000))
-    try:
-        server = await asyncio.start_server(health_check_handler, '0.0.0.0', port)
-        logging.info(f"✅ Sağlık Kontrolü sunucusu {port} portunda aktif.")
-        async with server:
-            try:
-                await server.serve_forever()
-            except asyncio.CancelledError:
-                logging.info("🛑 Sağlık kontrolü sunucusu durduruluyor...")
-    except Exception as e:
-        logging.error(f"❌ Sunucu Hatası: {e}")
+def run_flask():
+    port = int(os.getenv("PORT", 8080))
+    flask_app.run(host='0.0.0.0', port=port)
 
-async def post_init(application):
-    # Görevi bot_data içinde saklayarak kapanışta iptal edebilmeyi sağlıyoruz.
-    application.bot_data["health_task"] = asyncio.create_task(run_health_check_server())
-
-async def post_stop(application):
-    # Uygulama durduğunda sağlık sunucusu görevini de sonlandırıyoruz.
-    task = application.bot_data.get("health_task")
-    if task:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        logging.info("✅ Sağlık kontrolü sunucusu tamamen kapatıldı.")
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # --- ANA ÇALIŞTIRICI ----------------------------------------
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).post_stop(post_stop).build()
+    keep_alive()  # Web sunucusunu başlatır
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analiz", analiz))
     app.add_handler(CommandHandler("tahmin", tahmin))
