@@ -341,6 +341,87 @@ def run_market_scan(scan_list: list[str]) -> list[dict]:
 
     return sorted(results, key=lambda x: x["score"], reverse=True)
 
+def custom_screen_calc(symbol: str, data: pd.DataFrame) -> dict | None:
+    try:
+        ticker_sym = f"{symbol}.IS"
+        if data.empty or len(data) < 15:
+            return None
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
+        close  = data["Close"]
+
+        # RSI Calculation
+        rsi_period = min(14, max(1, len(close)-1))
+        delta    = close.diff()
+        gain     = delta.where(delta > 0, 0.0)
+        loss     = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/rsi_period, min_periods=1, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/rsi_period, min_periods=1, adjust=False).mean()
+        rs       = avg_gain / avg_loss.replace(0, 0.001)
+        rsi_s    = 100 - (100 / (1 + rs))
+        rsi      = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
+
+        if not (20 <= rsi <= 40):
+            return None
+
+        # Fundamental Filters
+        info = yf.Ticker(ticker_sym).info
+        
+        # 1. Özsermaye = Sermayenin en az 2, en fazla 3 katı (Defter değeri 2 ile 3)
+        bv = info.get("bookValue")
+        if bv is None or not isinstance(bv, (int, float)) or not (2.0 <= bv <= 3.0):
+            return None
+            
+        # 2. FD/FAVÖK (EV/EBITDA) <= 10
+        ev_ebitda = info.get("enterpriseToEbitda")
+        if ev_ebitda is None or not isinstance(ev_ebitda, (int, float)) or ev_ebitda > 10.0:
+            return None
+            
+        # 3. PD/DD (Fiyat/Defter Değeri) <= 1.5
+        pddd = info.get("priceToBook")
+        if pddd is None or not isinstance(pddd, (int, float)) or pddd > 1.5:
+            return None
+
+        price = float(close.iloc[-1])
+        return {
+            "symbol": symbol,
+            "rsi": round(rsi, 1),
+            "bv": round(bv, 2),
+            "ev_ebitda": round(ev_ebitda, 2),
+            "pddd": round(pddd, 2),
+            "price": round(price, 2)
+        }
+            
+    except Exception:
+        return None
+
+def run_custom_scan(scan_list: list[str]) -> list[dict]:
+    results = []
+    if not scan_list:
+        return results
+    try:
+        tickers = [f"{sym}.IS" for sym in scan_list]
+        df = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', progress=False, auto_adjust=True, threads=10)
+        is_multi = isinstance(df.columns, pd.MultiIndex)
+        for sym in scan_list:
+            ticker_sym = f"{sym}.IS"
+            try:
+                if is_multi:
+                    if ticker_sym not in df.columns.levels[0]:
+                        continue
+                    stock_data = df[ticker_sym].dropna(how='all')
+                else:
+                    stock_data = df.dropna(how='all')
+                res = custom_screen_calc(sym, stock_data)
+                if res:
+                    results.append(res)
+            except:
+                continue
+    except:
+        pass
+    return sorted(results, key=lambda x: x["rsi"])
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # --- USTA ANALİZ MANTIĞI ---
@@ -462,6 +543,82 @@ def sanitize_md(text):
     text = text.replace("_", "-") 
     text = text.replace("`", "'")
     return text
+
+def get_intraday_signal(symbol: str) -> dict | None:
+    try:
+        ticker_sym = f"{symbol.upper()}.IS"
+        data = yf.download(ticker_sym, period="5d", interval="15m", progress=False, auto_adjust=True)
+        if data.empty or len(data) < 35:
+            return None
+
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
+        close = data['Close']
+        
+        # MACD (12, 26, 9)
+        exp1 = close.ewm(span=12, adjust=False).mean()
+        exp2 = close.ewm(span=26, adjust=False).mean()
+        macd_line = exp1 - exp2
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        
+        # RSI (14)
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, 0.001)
+        rsi_series = 100 - (100 / (1 + rs))
+        
+        # TRIX (15)
+        ema1 = close.ewm(span=15, adjust=False).mean()
+        ema2 = ema1.ewm(span=15, adjust=False).mean()
+        ema3 = ema2.ewm(span=15, adjust=False).mean()
+        trix_series = ema3.pct_change() * 10000
+
+        # Current Values
+        price = round(float(close.iloc[-1]), 2)
+        macd_val = round(float(macd_line.iloc[-1]), 3)
+        sig_val = round(float(signal_line.iloc[-1]), 3)
+        macdp_val = round(float(macd_line.iloc[-2]), 3)
+        sigp_val = round(float(signal_line.iloc[-2]), 3)
+        rsi_val = round(float(rsi_series.iloc[-1]), 2)
+        trix_val = round(float(trix_series.iloc[-1]), 3)
+        
+        # Sinyal Yorumlama
+        # MACD: Mavi (MACD), Turuncu (Sinyal).
+        decision = "BEKLE 🟡"
+        macd_yorum = f"MACD: {macd_val} | Sinyal: {sig_val}"
+        if macdp_val <= sigp_val and macd_val > sig_val:
+            decision = "AL 🟢 (Mavi Çizgi, Turuncuyu Yukarı Kesti!)"
+        elif macdp_val >= sigp_val and macd_val < sig_val:
+            decision = "SAT 🔴 (Mavi Çizgi, Turuncuyu Aşağı Kesti!)"
+        elif macd_val > sig_val:
+            decision = "TUT 🟢 (Mavi Çizgi Üstte, Kısa Vade Trend Pozitif)"
+        elif macd_val < sig_val:
+            decision = "BEKLE 🔴 (Mavi Çizgi Altta, Kısa Vade Trend Negatif)"
+
+        # TRIX ve RSI Uyarısı
+        trix_yorum = "TRIX Güçlü Pozitif Trend" if trix_val > 0 else "TRIX Negatif Trend"
+        if rsi_val > 70:
+            rsi_yorum = f"RSI: {rsi_val} (AŞIRI ALIM! Kar satışı riski var)"
+        elif rsi_val < 30:
+            rsi_yorum = f"RSI: {rsi_val} (AŞIRI SATIM! Tepki alımı gelebilir)"
+        else:
+            rsi_yorum = f"RSI: {rsi_val} (Nötr Bölge)"
+
+        return {
+            "price": price,
+            "decision": decision,
+            "macd_yorum": macd_yorum,
+            "rsi_yorum": rsi_yorum,
+            "trix_yorum": trix_yorum,
+            "trix_val": trix_val
+        }
+    except Exception as e:
+        logging.warning(f"Intraday Signal Hatası ({symbol}): {e}")
+        return None
 
 def get_stock_news(symbol: str) -> str:
     """Hisse ile ilgili en son haber başlıklarını (KAP dahil) Google News üzerinden çeker."""
@@ -739,8 +896,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📅 Günlük Tahmin", callback_data='tahmin_et')],
         [InlineKeyboardButton("📋 Takip Listem", callback_data='liste_goster'), 
          InlineKeyboardButton("🗓 Haftalık Rapor", callback_data='haftalik_rapor')],
-        [InlineKeyboardButton("🔭 Fırsat Tarayıcı", callback_data='hisse_tara')],
-        [InlineKeyboardButton("📚 Borsa Sözlüğü", callback_data='bilgi_al')]
+        [InlineKeyboardButton("🔭 Fırsat Tarayıcı", callback_data='hisse_tara'),
+         InlineKeyboardButton("🎯 Özel Tarayıcı", callback_data='hisse_ozel_tara')],
+        [InlineKeyboardButton("📚 Borsa Sözlüğü", callback_data='bilgi_al'),
+         InlineKeyboardButton("⚡ Anlık Sinyal", callback_data='anlik_sinyal')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     welcome_text = (
@@ -813,6 +972,54 @@ async def tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             raise e
 
+async def ozel_tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🎯 *ÖZEL TARAYICI BAŞLATILDI*...\n(Metrikler: RSI 20-40, Özsermaye x2-x3, FAVÖK<=10, PD/DD<=1.5)", parse_mode='Markdown')
+    scan_list = get_all_bist_tickers()
+    results = await asyncio.to_thread(run_custom_scan, scan_list)
+    if not results:
+        await msg.edit_text("📭 Bu özel kriterlere uyan hisse bulunamadı.")
+        return
+    lines = ["🔥 *ÖZEL KRİTERLERE UYANLAR:*\n"]
+    for i, r in enumerate(results, 1):
+        lines.append(f"✅ {i}. {r['symbol']} ({r['price']} TL) | RSI:{r['rsi']}, BV:{r['bv']}, PD/DD:{r['pddd']}, EV/EBITDA:{r['ev_ebitda']}")
+    keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
+    try:
+        await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    except BadRequest as e:
+        if "Can't parse entities" in str(e):
+            await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            raise e
+
+async def sinyal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbol = context.args[0].upper() if context.args else None
+    if not symbol:
+        await update.message.reply_text("🚨 Lütfen sembol girin. Örn: `/sinyal thyao`", parse_mode='Markdown')
+        return
+    msg = await update.message.reply_text(f"⏳ *{symbol}* için 15 dakikalık Anlık Sinyaller analiz ediliyor...", parse_mode='Markdown')
+    res = await asyncio.to_thread(get_intraday_signal, symbol)
+    if res:
+        keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
+        text = (
+            f"⚡ *ANLIK SİNYAL: {symbol}*\n"
+            f"💰 Fiyat: {res['price']} TL\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 *KARAR:* {res['decision']}\n\n"
+            f"📊 *Detaylar (15 dk grafik):*\n"
+            f"• {res['macd_yorum']}\n"
+            f"• {res['rsi_yorum']}\n"
+            f"• {res['trix_yorum']} ({res['trix_val']})"
+        )
+        try:
+            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        except BadRequest as e:
+            if "Can't parse entities" in str(e):
+                await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                raise e
+    else:
+        await msg.edit_text("❌ Yeterli anlık veri bulunamadı. (Mesai saatleri dışında veya sorunlu hisse)")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -845,6 +1052,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         raise e
     elif data == 'bilgi_al':
         await query.message.reply_text("📚 *Borsa Sözlüğü aktif.*", parse_mode='Markdown')
+    elif data == 'anlik_sinyal':
+        await query.message.reply_text("⚡ Lütfen `/sinyal HISSE` şeklinde komut gönderin (Örn: `/sinyal THYAO`).", parse_mode='Markdown')
     elif data.startswith('ekle_'):
         symbol = data.split('_')[1]
         watchlist = load_watchlist()
@@ -854,6 +1063,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"✅ {symbol} eklendi.")
     elif data == 'hisse_tara':
         await tara(update, context)
+    elif data == 'hisse_ozel_tara':
+        await ozel_tara(update, context)
     elif data == 'ana_menu':
         await start(update, context)
 
@@ -890,6 +1101,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("analiz", analiz))
     app.add_handler(CommandHandler("tahmin", tahmin))
     app.add_handler(CommandHandler("tara", tara))
+    app.add_handler(CommandHandler("ozeltara", ozel_tara))
+    app.add_handler(CommandHandler("sinyal", sinyal))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_text))
     app.add_handler(CallbackQueryHandler(button_handler))
     print("🚀 Bot Aktif!")
