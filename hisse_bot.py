@@ -1,7 +1,9 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import google.generativeai as genai
+import google.generativeai as legacy_genai
+from google import genai
+from google.genai import types
 import logging
 import traceback
 import os
@@ -26,7 +28,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WATCHLIST_FILE = "watchlist.json"
 
 # Gemini Kurulumu
-genai.configure(api_key=GEMINI_API_KEY)
+legacy_genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Loglama
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -730,8 +733,6 @@ def get_stock_analysis(symbol):
         bv_str = str(round(info.get("bookValue"), 2)) if isinstance(info.get("bookValue"), (int, float)) else "Veri Yok"
 
         # ─── ROIC (Sermaye Yatırım Getirisi) ──────────────────────────────────
-        # Proxy: (EBITDA / (Total Assets - Current Liabilities)) if possible, 
-        # but yfinance info is limited. Using returnOnAssets as a conservative proxy.
         roic_val = info.get("returnOnInvestedCapital") or info.get("returnOnAssets")
         roic_str = f"%{round(roic_val * 100, 2)}" if isinstance(roic_val, (int, float)) else "Veri Yok"
 
@@ -765,24 +766,35 @@ def get_stock_analysis(symbol):
         ind = calculate_indicators(data)
         news_text = get_stock_news(symbol)
 
-        model = genai.GenerativeModel('gemini-3-flash-preview')
+        # Google Search Tool Tanımlama
+        tools = [
+            types.Tool(google_search=types.GoogleSearch())
+        ]
+        
+        # Yeni GenAI Client Kullanımı
+        generate_content_config = types.GenerateContentConfig(
+            tools=tools,
+            thinking_config=types.ThinkingConfig(
+                thinking_level="HIGH",
+            ),
+            system_instruction="Sen deneyimli ama halk dilinden konuşan, samimi bir Borsa Analistisin. Sana verilen verilerin yanı sıra internetten en güncel haberleri ve piyasa durumunu araştırarak yorum yapmalısın."
+        )
+
         prompt = f"""
-        Görev: Sen deneyimli ama halk dilinden konuşan, samimi bir Borsa Analistisin. 
-        Aşağıdaki verileri kullanarak '{symbol}' hissesi için BÜTÜNCÜL (Holistik) bir rapor yaz.
+        Görev: '{symbol}' hissesi için internetten en güncel gelişmeleri (son dakika haberleri, yeni KAP bildirimleri, sektörel yorumlar) de araştırarak BÜTÜNCÜL (Holistik) bir rapor yaz.
         
         ÖNEMLİ (BAŞLANGIÇ): Raporuna mutlaka en başta Çarpan Değeri, Adil Değer ve Sermaye Yatırım Getirisi (ROIC) verilerini net bir şekilde belirterek başla. 
         Mevcut fiyatın Adil Değer'e göre ucuz mu pahalı mı olduğunu ve ROIC'in şirketin verimliliği hakkında ne dediğini (örn: %30 üstü harika, %15 altı zayıf vb.) basitçe yorumla.
 
         KESİNLİKLE DİKKAT ETMEN GEREKENLER (KURALLAR):
         1. ASLA karmaşık finansal kelimeler (jargon) kullanma. Normal, borsaya yeni başlamış bir insanın anlayacağı kadar BASİT ve SADE anlat.
-        2. "Volatilite", "Momentum", "RSI", "MACD", "SMA", "F/K", "PD/DD" gibi terimleri doğrudan rapora yazmak yerine, bunların ne anlama geldiğini yorumlayarak anlat.
-        3. İnsanları teknik verilere boğma. Sadece verilen sayıların iyi mi kötü mü olduğunu söyle.
-        4. Sana verilen GERÇEK sayıları referans al.
-        5. TEMEL BEKLENTİLER: Bir hissede ideal olarak (F/K < 10), (PD/DD <= 10), (Yıllık Kar Büyümesi >= %100), (ROE >= %10), (ROIC >= %30), (PEG <= 1), Öz sermayenin negatif olmaması ve EPS'in pozitif olması istenir.
+        2. Teknik terimleri (RSI, MACD vb.) doğrudan yazmak yerine anlamlarını yorumlayarak anlat.
+        3. İnsanları teknik verilere boğma. Sadece verilen sayıların iyi mi kötü olduğunu söyle.
+        4. İnternetten bu hisse ile ilgili SON 24 SAATTEKİ gelişmeleri kontrol et.
         
         Makro Durum: {macro_context}
         Endeks Durumu: {market_context}
-        Piyasa Haberleri ve KAP Bildirimleri:
+        Piyasa Haberleri ve KAP Bildirimleri (Sana gelenler):
         {news_text}
         Şirketin Temel Analizi:
         {fundamental_context}
@@ -806,7 +818,12 @@ def get_stock_analysis(symbol):
         Kalın yazmak için kelimeyi '*' içine al (Örn: *Kelime*). 
         Markdown formatında unclosed (kapatılmamış) yıldız bırakma.
         """
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash-thinking-exp-01-21', # Not: gemini-3-flash-preview henüz yaygın olmayabilir, en güçlü thinking modelini kullanıyoruz.
+            contents=prompt,
+            config=generate_content_config
+        )
+        
         safe_response = sanitize_md(response.text)
         return {"price": round(last_price, 2), "ind": ind, "analysis": safe_response, "market": market_context}
     except Exception as e:
@@ -840,7 +857,8 @@ def get_daily_prediction(symbol):
         
         pivot = (prev_high + prev_low + prev_close) / 3
         r1 = (2 * pivot) - prev_low
-        s1 = (2 * pivot) - prev_high
+        r1 = (2 * pivot) - prev_high
+        s1 = (2 * pivot) - prev_low
         
         # Günlük Tahmin için de Temel Verileri Çekelim
         try:
@@ -861,10 +879,21 @@ def get_daily_prediction(symbol):
         ind = calculate_indicators(data)
         news_text = get_stock_news(symbol)
         
-        model = genai.GenerativeModel('gemini-3-flash-preview')
+        # Google Search Tool Tanımlama
+        tools = [
+            types.Tool(google_search=types.GoogleSearch())
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            tools=tools,
+            thinking_config=types.ThinkingConfig(
+                thinking_level="HIGH",
+            ),
+            system_instruction="Sen bir 'Day Trader' (günlük işlem) uzmanısın. İnternetten en güncel verileri ve haberleri kullanarak bugün için nokta atışı tahminler yaparsın."
+        )
+
         prompt = f"""
-        Görev: Sen bir 'Day Trader' uzmanısın.
-        '{symbol}' hissesi için GÜNLÜK bir TAHMİN raporu yaz.
+        Görev: '{symbol}' hissesi için internetten en güncel piyasa havasını ve haberleri araştırarak GÜNLÜK bir TAHMİN raporu yaz.
         
         ÖNEMLİ: Tahminine başlarken Çarpan Değeri, Adil Değer ve ROIC verilerini göz önünde bulundurarak hissenin bugün için 'pahalı' mı 'ucuz' mu olduğunu kısaca hissettir.
         
@@ -872,17 +901,24 @@ def get_daily_prediction(symbol):
         - Pivot: {round(pivot,2)} TL (Destek: {round(s1,2)} / Direnç: {round(r1,2)})
         - RSI: {ind['rsi']}
         - Temel Durum: {fundamental_summary}
-        - Haberler: {news_text}
+        - Haberler (Sana gelenler): {news_text}
+        
         Format:
         🎯 *GÜNLÜK HİSSİYAT*
+        🌍 *GÜNCEL HABER ETKİSİ*: (İnternetten bulduğun bugünlük önemli haberlerin etkisini yorumla)
         ⚖️ *İŞLEM SEVİYELERİ*
         🔮 *GÜNÜN TAHMİNİ*
         
-        ÖNEMLİ: Madde işaretleri için sadece '•' karakterini kullan, '*' veya '-' kullanma.
-        Kalın yazmak için kelimeyi '*' içine al (Örn: *Kelime*).
-        Markdown formatında unclosed (kapatılmamış) yıldız bırakma.
+        ÖNEMLİ: Madde işaretleri için sadece '•' karakterini kullan. Kalın yazmak için '*'.
+        'Yatırım tavsiyesi değildir.' şeklinde bitir.
         """
-        response = model.generate_content(prompt)
+        
+        response = client.models.generate_content(
+            model='gemini-2.0-flash-thinking-exp-01-21',
+            contents=prompt,
+            config=generate_content_config
+        )
+        
         return {"price": round(last_price, 2), "analysis": sanitize_md(response.text)}
     except Exception as e:
         logging.error(f"❌ Tahmin Hatası ({symbol}): {e}")

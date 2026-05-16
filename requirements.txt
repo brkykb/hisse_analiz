@@ -13,6 +13,7 @@ beautifulsoup4
 
 # Google Gemini AI Entegrasyonu
 google-generativeai
+google-genai
 
 # HTTP İstekleri (Gerekirse)
 httpx
