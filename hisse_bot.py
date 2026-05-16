@@ -611,13 +611,47 @@ def get_intraday_signal(symbol: str) -> dict | None:
         else:
             rsi_yorum = f"RSI: {rsi_val} (Nötr Bölge)"
 
+        # --- Gemini AI Yorumu Ekleme ---
+        tools = [types.Tool(google_search=types.GoogleSearch())]
+        generate_content_config = types.GenerateContentConfig(
+            tools=tools,
+            thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
+            system_instruction="Sen bir 'Scalping' ve 'Day Trade' uzmanısın. Kısa vadeli (15 dakikalık) teknik verileri ve internetteki en son haberleri yorumlayarak anlık işlem kararı verirsin."
+        )
+
+        prompt = f"""
+        Görev: '{symbol}' hissesi için 15 dakikalık teknik verileri ve internetteki EN GÜNCEL haberleri (son 1 saat içindeki gelişmeler, KAP haberleri) birleştirerek kısa vadeli bir analiz yap.
+        
+        Teknik Veriler:
+        - Fiyat: {price} TL
+        - Teknik Karar: {decision}
+        - MACD Durumu: {macd_yorum}
+        - RSI Durumu: {rsi_yorum}
+        - TRIX Durumu: {trix_yorum} ({trix_val})
+        
+        Senden Beklenen:
+        1. Teknik veriler ile internetteki son dakika haberleri arasında bir uyum var mı? (Örn: Teknik 'AL' diyor ama kötü bir haber mi geldi?)
+        2. Bu verilere göre 1-2 saatlik periyotta hisse nasıl hareket edebilir?
+        3. Çok kısa bir 'Scalper Notu' ekle.
+        
+        Kural: Çok kısa, net ve vurucu konuş. Karmaşık terimlerden kaçın. Madde işareti olarak sadece '•' kullan.
+        'Yatırım tavsiyesi değildir.'
+        """
+        
+        ai_response = client.models.generate_content(
+            model='gemini-2.0-flash-thinking-exp-01-21',
+            contents=prompt,
+            config=generate_content_config
+        )
+        
         return {
             "price": price,
             "decision": decision,
             "macd_yorum": macd_yorum,
             "rsi_yorum": rsi_yorum,
             "trix_yorum": trix_yorum,
-            "trix_val": trix_val
+            "trix_val": trix_val,
+            "ai_yorum": sanitize_md(ai_response.text)
         }
     except Exception as e:
         logging.warning(f"Intraday Signal Hatası ({symbol}): {e}")
@@ -1044,7 +1078,8 @@ async def sinyal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 *Detaylar (15 dk grafik):*\n"
             f"• {res['macd_yorum']}\n"
             f"• {res['rsi_yorum']}\n"
-            f"• {res['trix_yorum']} ({res['trix_val']})"
+            f"• {res['trix_yorum']} ({res['trix_val']})\n\n"
+            f"🧠 *YAPAY ZEKA YORUMU:*\n{res['ai_yorum']}"
         )
         try:
             await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
