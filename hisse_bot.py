@@ -665,14 +665,23 @@ def get_stock_news(symbol: str) -> str:
         with urllib.request.urlopen(req, timeout=5) as response:
             xml_data = response.read()
             root = ET.fromstring(xml_data)
+            from datetime import datetime, timedelta
+            now = datetime.now()
             news = []
-            for item in root.findall('.//item')[:4]:
+            for item in root.findall('.//item'):
                 title = item.find('title')
                 pubDate = item.find('pubDate')
                 if title is not None and pubDate is not None:
-                    # Tarih formatını temizle (Örn: "Thu, 15 Mar 2026 12:00:00 GMT" -> "15 Mar")
-                    date_clean = pubDate.text[:-13].replace(',','')
-                    news.append(f"[{date_clean}] {title.text}")
+                    try:
+                        # "Thu, 15 Mar 2026 12:00:00 GMT"
+                        date_str = pubDate.text[:-4] # GMT kısmını at
+                        dt = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S")
+                        if now - dt < timedelta(days=7):
+                            date_clean = dt.strftime("%d %b")
+                            news.append(f"[{date_clean}] {title.text}")
+                    except:
+                        continue
+                if len(news) >= 4: break
             if news:
                 return "\n".join(news)
     except Exception as e:
@@ -806,12 +815,13 @@ def get_stock_analysis(symbol):
         ]
         
         # Yeni GenAI Client Kullanımı
+        current_date = time.strftime("%d.%m.%Y")
         generate_content_config = types.GenerateContentConfig(
             tools=tools,
             thinking_config=types.ThinkingConfig(
                 thinking_level="HIGH",
             ),
-            system_instruction="Sen deneyimli ama halk dilinden konuşan, samimi bir Borsa Analistisin. Sana verilen verilerin yanı sıra internetten en güncel haberleri ve piyasa durumunu araştırarak yorum yapmalısın."
+            system_instruction=f"Bugün tarih: {current_date}. Sen deneyimli bir Borsa Analistisin. Sadece GÜNCEL (son 24 saat) haberlere odaklanmalısın. Geçmişte kalmış (aylar önceki) bedelsiz, sermaye artırımı gibi olayları sanki bugün olmuş gibi anlatma. Eğer yeni bir haber yoksa 'yeni bir gelişme yok' de."
         )
 
         prompt = f"""
@@ -838,6 +848,10 @@ def get_stock_analysis(symbol):
         - Ortalamalar: SMA20:{ind['sma20']}, SMA50:{ind['sma50']}, SMA200:{ind['sma200']}
         - Algoritmik Sinyal: {ind['algo_signal']}
 
+        'Yatırım tavsiyesi değildir.' şeklinde bitir.
+        
+        ÖNEMLİ: Bugünün tarihi {current_date}. Eğer internette bulduğun haberler 1 haftadan eskiyse onları 'güncel haber' gibi sunma.
+        
         Analiz Formatın:
         🏢 *ŞİRKETİN DURUMU (BİLANÇO)*: (Sade dille)
         🤖 *ALGORİTMA NE DİYOR?*: {ind['algo_signal']}
@@ -845,12 +859,6 @@ def get_stock_analysis(symbol):
         📈 *İŞLEM SEVİYELERİ*: (Alış/Hedef/Stop)
         ⚖️ *RİSK VE PORTFÖY*: (Derecelendir)
         🧠 *SON SÖZ*: (Karar)
-
-        'Yatırım tavsiyesi değildir.' şeklinde bitir.
-        
-        ÖNEMLİ: Madde işaretleri için sadece '•' karakterini kullan, '*' veya '-' kullanma. 
-        Kalın yazmak için kelimeyi '*' içine al (Örn: *Kelime*). 
-        Markdown formatında unclosed (kapatılmamış) yıldız bırakma.
         """
         response = client.models.generate_content(
             model='gemini-2.0-flash-thinking-exp-01-21', # Not: gemini-3-flash-preview henüz yaygın olmayabilir, en güçlü thinking modelini kullanıyoruz.
@@ -918,12 +926,13 @@ def get_daily_prediction(symbol):
             types.Tool(google_search=types.GoogleSearch())
         ]
         
+        current_date = time.strftime("%d.%m.%Y")
         generate_content_config = types.GenerateContentConfig(
             tools=tools,
             thinking_config=types.ThinkingConfig(
                 thinking_level="HIGH",
             ),
-            system_instruction="Sen bir 'Day Trader' (günlük işlem) uzmanısın. İnternetten en güncel verileri ve haberleri kullanarak bugün için nokta atışı tahminler yaparsın."
+            system_instruction=f"Bugün tarih: {current_date}. Sen bir Day Trader'sın. SADECE BUGÜNÜN haberlerine ve anlık fiyat hareketlerine odaklan. Eski bedelsiz/sermaye artışı haberlerini ciddiye alma, onlar fiyatlandı bitti."
         )
 
         prompt = f"""
