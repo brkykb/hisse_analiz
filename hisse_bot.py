@@ -643,7 +643,7 @@ def get_intraday_signal(symbol: str) -> dict | None:
         """
         
         ai_response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=generate_content_config
         )
@@ -865,7 +865,7 @@ def get_stock_analysis(symbol):
         🧠 *SON SÖZ*: (Karar)
         """
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=generate_content_config
         )
@@ -959,7 +959,7 @@ def get_daily_prediction(symbol):
         """
         
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=generate_content_config
         )
