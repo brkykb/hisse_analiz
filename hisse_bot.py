@@ -15,7 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram.error import BadRequest
 from flask import Flask
@@ -979,6 +979,10 @@ def get_daily_prediction(symbol):
 
 # --- BOT KOMUTLARI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # WebApp URL: Uses GitHub Pages by default (since it has free HTTPS!)
+    # https://brkykb.github.io/hisse_analiz/webapp.html
+    webapp_url = "https://brkykb.github.io/hisse_analiz/webapp.html"
+    
     keyboard = [
         [InlineKeyboardButton("🔍 Hisse Analiz Et", callback_data='analiz_et'),
          InlineKeyboardButton("📅 Günlük Tahmin", callback_data='tahmin_et')],
@@ -989,15 +993,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📚 Borsa Sözlüğü", callback_data='bilgi_al'),
          InlineKeyboardButton("⚡ Anlık Sinyal", callback_data='anlik_sinyal')]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup_inline = InlineKeyboardMarkup(keyboard)
+    
+    # Bottom Reply Keyboard for the Web App (makes it super easy for dad!)
+    reply_keyboard = [
+        [KeyboardButton("📊 Görsel Hisse Paneli", web_app=WebAppInfo(url=webapp_url))]
+    ]
+    reply_markup_reply = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+    
     welcome_text = (
         "🏛 *BÜTÜNCÜL BORSA ASİSTANI*\n\n"
-        "Hoş geldiniz. Lütfen yapmak istediğiniz işlemi seçin:"
+        "Hoş geldiniz. Kolay kullanım için alttaki **📊 Görsel Hisse Paneli** butonuna basarak "
+        "yazı yazmadan hisseleri seçip analiz edebilirsiniz!"
     )
+    
     if update.message:
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        # Message 1: Register bottom WebApp reply keyboard
+        await update.message.reply_text(
+            "📊 Görsel Hisse Paneli aktif edildi! Klavyenizin altındaki butona basarak hisseleri kolayca seçebilirsiniz.",
+            reply_markup=reply_markup_reply,
+            parse_mode='Markdown'
+        )
+        # Message 2: Main welcome menu with inline buttons
+        await update.message.reply_text(
+            welcome_text,
+            reply_markup=reply_markup_inline,
+            parse_mode='Markdown'
+        )
     else:
-        await update.callback_query.message.edit_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        # From callback query: edit text and inline keyboard
+        await update.callback_query.message.edit_text(
+            welcome_text,
+            reply_markup=reply_markup_inline,
+            parse_mode='Markdown'
+        )
 
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper() if context.args else None
@@ -1170,6 +1199,13 @@ flask_app = Flask('')
 @flask_app.route('/')
 def home():
     return "Bot aktif ve çalışıyor!"
+
+@flask_app.route('/webapp')
+def webapp():
+    if os.path.exists("webapp.html"):
+        with open("webapp.html", "r", encoding="utf-8") as f:
+            return f.read()
+    return "Web App dosyası bulunamadı."
 
 def run_flask():
     port = int(os.getenv("PORT", 8080))

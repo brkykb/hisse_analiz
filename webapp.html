@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Borsa Asistanı Paneli</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <!-- Telegram WebApp SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0e14;
+            --card-bg: rgba(20, 26, 38, 0.6);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --primary: #00e676; /* Glow Green */
+            --secondary: #2979ff; /* Electric Blue */
+            --accent: #ff9100; /* Vibrant Orange */
+            --text-color: #ffffff;
+            --text-muted: #8a909a;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            padding: 16px;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px 0;
+        }
+
+        header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            background: linear-gradient(135deg, #00e676 0%, #2979ff 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 6px;
+        }
+
+        header p {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 15px 0 10px 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* Hisse Seçim Alanı */
+        .search-container {
+            position: relative;
+            margin-bottom: 16px;
+        }
+
+        .search-input {
+            width: 100%;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px 16px 14px 44px;
+            color: var(--text-color);
+            font-size: 15px;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        .search-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 10px rgba(0, 230, 118, 0.15);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 16px;
+        }
+
+        /* Popüler Hisseler Grid */
+        .ticker-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .ticker-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 12px 6px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .ticker-card.selected {
+            background-color: rgba(0, 230, 118, 0.1);
+            border-color: var(--primary);
+            color: var(--primary);
+            box-shadow: 0 0 12px rgba(0, 230, 118, 0.12);
+            transform: translateY(-2px);
+        }
+
+        /* İşlem Seçim Kartları */
+        .action-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 25px;
+        }
+
+        .action-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .action-card.selected {
+            background-color: rgba(41, 121, 255, 0.08);
+            border-color: var(--secondary);
+            box-shadow: 0 0 12px rgba(41, 121, 255, 0.12);
+        }
+
+        .action-icon {
+            font-size: 24px;
+            width: 44px;
+            height: 44px;
+            background-color: rgba(255, 255, 255, 0.03);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .action-card.selected .action-icon {
+            background-color: rgba(41, 121, 255, 0.15);
+        }
+
+        .action-details {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .action-title {
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .action-desc {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* Tarama Butonları */
+        .scan-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+
+        .scan-btn {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px;
+            color: var(--text-color);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .scan-btn:active {
+            transform: scale(0.97);
+            border-color: var(--accent);
+            background-color: rgba(255, 145, 0, 0.05);
+        }
+
+        /* Ana Gönder Butonu */
+        .submit-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #00e676 0%, #00b0ff 100%);
+            border: none;
+            border-radius: 14px;
+            padding: 16px;
+            color: #000000;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-shadow: 0 4px 15px rgba(0, 230, 118, 0.3);
+            transition: all 0.2s ease;
+        }
+
+        .submit-btn:active {
+            transform: scale(0.98);
+            box-shadow: 0 2px 8px rgba(0, 230, 118, 0.2);
+        }
+
+        .submit-btn:disabled {
+            background: #252a34;
+            color: var(--text-muted);
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🏛 BORSA ASİSTANI PANELİ</h1>
+        <p>Hisse seçin ve analiz türüne dokunun</p>
+    </header>
+
+    <!-- Hisse Arama -->
+    <div class="section-title">🔍 HİSSE ARAMA / SEÇİM</div>
+    <div class="search-container">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="searchInput" class="search-input" placeholder="Hisse kodu yazın (Örn: THYAO)" oninput="handleSearch()">
+    </div>
+
+    <!-- Popüler Hisseler Grid -->
+    <div class="ticker-grid">
+        <div class="ticker-card" onclick="selectTicker('THYAO')">THYAO</div>
+        <div class="ticker-card" onclick="selectTicker('MIATK')">MIATK</div>
+        <div class="ticker-card" onclick="selectTicker('ALFAS')">ALFAS</div>
+        <div class="ticker-card" onclick="selectTicker('TUPRS')">TUPRS</div>
+        <div class="ticker-card" onclick="selectTicker('EREGL')">EREGL</div>
+        <div class="ticker-card" onclick="selectTicker('AKBNK')">AKBNK</div>
+        <div class="ticker-card" onclick="selectTicker('SISE')">SISE</div>
+        <div class="ticker-card" onclick="selectTicker('YEOTK')">YEOTK</div>
+    </div>
+
+    <!-- Analiz Türü -->
+    <div class="section-title">📊 ANALİZ TÜRÜ</div>
+    <div class="action-container">
+        <div class="action-card selected" id="action-analiz" onclick="selectAction('analiz')">
+            <div class="action-icon" style="color: var(--secondary);">📊</div>
+            <div class="action-details">
+                <div class="action-title">Bütüncül Analiz Raporu</div>
+                <div class="action-desc">Temel Çarpanlar, Grafik Trendi ve Yapay Zekâ Raporu</div>
+            </div>
+        </div>
+
+        <div class="action-card" id="action-tahmin" onclick="selectAction('tahmin')">
+            <div class="action-icon" style="color: var(--accent);">🔮</div>
+            <div class="action-details">
+                <div class="action-title">Günlük Fiyat Tahmini</div>
+                <div class="action-desc">Destek/Direnç Seviyeleri ve Gün İçi Day Trade Tahmini</div>
+            </div>
+        </div>
+
+        <div class="action-card" id="action-sinyal" onclick="selectAction('sinyal')">
+            <div class="action-icon" style="color: var(--primary);">⚡</div>
+            <div class="action-details">
+                <div class="action-title">15 Dk Anlık Sinyal</div>
+                <div class="action-desc">Kısa Vadeli MACD/RSI Göstergeleri ve Scalper Notu</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hazır Hızlı Taramalar -->
+    <div class="section-title">🔭 HIZLI HİSSE TARAMALARI</div>
+    <div class="scan-grid">
+        <button class="scan-btn" onclick="sendDirectCommand('/tara')">
+            🔭 Fırsat Tarayıcı
+        </button>
+        <button class="scan-btn" onclick="sendDirectCommand('/ozeltara')">
+            🎯 Özel Tarayıcı
+        </button>
+    </div>
+
+    <!-- Gönder Butonu -->
+    <button class="submit-btn" id="submitBtn" onclick="submitRequest()" disabled>
+        İşlemi Başlat 🚀
+    </button>
+
+    <script>
+        // Telegram WebApp SDK Initialization
+        const tg = window.Telegram.WebApp;
+        tg.expand(); // Expand bottom sheet to maximum height
+
+        let selectedTicker = "";
+        let selectedAction = "analiz"; // default
+
+        function selectTicker(symbol) {
+            selectedTicker = symbol.toUpperCase();
+            
+            // Highlight card
+            const cards = document.querySelectorAll('.ticker-card');
+            cards.forEach(card => {
+                if (card.textContent === selectedTicker) {
+                    card.classList.add('selected');
+                } else {
+                    card.classList.remove('selected');
+                }
+            });
+
+            // Update search input
+            document.getElementById('searchInput').value = selectedTicker;
+            updateSubmitButton();
+        }
+
+        function handleSearch() {
+            const inputVal = document.getElementById('searchInput').value.trim().toUpperCase();
+            selectedTicker = inputVal;
+
+            // Sync with ticker cards if matches
+            const cards = document.querySelectorAll('.ticker-card');
+            cards.forEach(card => {
+                if (card.textContent === selectedTicker) {
+                    card.classList.add('selected');
+                } else {
+                    card.classList.remove('selected');
+                }
+            });
+
+            updateSubmitButton();
+        }
+
+        function selectAction(actionType) {
+            selectedAction = actionType;
+
+            // Highlight action card
+            const cards = document.querySelectorAll('.action-card');
+            cards.forEach(card => {
+                card.classList.remove('selected');
+            });
+            document.getElementById(`action-${actionType}`).classList.add('selected');
+        }
+
+        function updateSubmitButton() {
+            const btn = document.getElementById('submitBtn');
+            if (selectedTicker && selectedTicker.length >= 3 && selectedTicker.length <= 6) {
+                btn.disabled = false;
+            } else {
+                btn.disabled = true;
+            }
+        }
+
+        function submitRequest() {
+            if (!selectedTicker) return;
+
+            // Format command: e.g., "/analiz THYAO" or "/tahmin THYAO"
+            let command = `/${selectedAction} ${selectedTicker}`;
+            
+            // Send command data back to the Telegram Bot
+            tg.sendData(command);
+            tg.close(); // Close the webapp sheet
+        }
+
+        function sendDirectCommand(command) {
+            // Immediately send scanner command and close
+            tg.sendData(command);
+            tg.close();
+        }
+    </script>
+</body>
+</html>
