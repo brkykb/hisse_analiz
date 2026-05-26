@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  hisse-bot:
+    build: .
+    container_name: hisse_bot_app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # Persist the stock watchlist data on container restarts
+      - ./watchlist.json:/app/watchlist.json
