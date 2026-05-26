@@ -87,6 +87,7 @@
             color: var(--text-color);
             font-size: 15px;
             outline: none;
+            text-transform: uppercase;
             transition: all 0.3s ease;
         }
 
@@ -349,9 +350,11 @@
         }
 
         function handleSearch() {
-            const inputVal = document.getElementById('searchInput').value.trim().toUpperCase();
+            const input = document.getElementById('searchInput');
+            input.value = input.value.toUpperCase();
+            const inputVal = input.value.trim();
             selectedTicker = inputVal;
-
+ 
             // Sync with ticker cards if matches
             const cards = document.querySelectorAll('.ticker-card');
             cards.forEach(card => {
@@ -361,7 +364,7 @@
                     card.classList.remove('selected');
                 }
             });
-
+ 
             updateSubmitButton();
         }
 
