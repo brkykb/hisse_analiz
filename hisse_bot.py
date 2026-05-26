@@ -620,7 +620,6 @@ def get_intraday_signal(symbol: str) -> dict | None:
         tools = [types.Tool(google_search=types.GoogleSearch())]
         generate_content_config = types.GenerateContentConfig(
             tools=tools,
-            thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
             system_instruction="Sen bir 'Scalping' ve 'Day Trade' uzmanısın. Kısa vadeli (15 dakikalık) teknik verileri ve internetteki en son haberleri yorumlayarak anlık işlem kararı verirsin."
         )
 
@@ -644,7 +643,7 @@ def get_intraday_signal(symbol: str) -> dict | None:
         """
         
         ai_response = client.models.generate_content(
-            model='gemini-2.0-flash-thinking-exp-01-21',
+            model='gemini-2.0-flash',
             contents=prompt,
             config=generate_content_config
         )
@@ -826,9 +825,6 @@ def get_stock_analysis(symbol):
         current_date = time.strftime("%d.%m.%Y")
         generate_content_config = types.GenerateContentConfig(
             tools=tools,
-            thinking_config=types.ThinkingConfig(
-                thinking_level="HIGH",
-            ),
             system_instruction=f"Bugün tarih: {current_date}. Sen deneyimli bir Borsa Analistisin. Sadece GÜNCEL (son 24 saat) haberlere odaklanmalısın. Geçmişte kalmış (aylar önceki) bedelsiz, sermaye artırımı gibi olayları sanki bugün olmuş gibi anlatma. Eğer yeni bir haber yoksa 'yeni bir gelişme yok' de."
         )
 
@@ -869,7 +865,7 @@ def get_stock_analysis(symbol):
         🧠 *SON SÖZ*: (Karar)
         """
         response = client.models.generate_content(
-            model='gemini-2.0-flash-thinking-exp-01-21', # Not: gemini-3-flash-preview henüz yaygın olmayabilir, en güçlü thinking modelini kullanıyoruz.
+            model='gemini-2.0-flash',
             contents=prompt,
             config=generate_content_config
         )
@@ -938,9 +934,6 @@ def get_daily_prediction(symbol):
         current_date = time.strftime("%d.%m.%Y")
         generate_content_config = types.GenerateContentConfig(
             tools=tools,
-            thinking_config=types.ThinkingConfig(
-                thinking_level="HIGH",
-            ),
             system_instruction=f"Bugün tarih: {current_date}. Sen bir Day Trader'sın. SADECE BUGÜNÜN haberlerine ve anlık fiyat hareketlerine odaklan. Eski bedelsiz/sermaye artışı haberlerini ciddiye alma, onlar fiyatlandı bitti."
         )
 
@@ -966,7 +959,7 @@ def get_daily_prediction(symbol):
         """
         
         response = client.models.generate_content(
-            model='gemini-2.0-flash-thinking-exp-01-21',
+            model='gemini-2.0-flash',
             contents=prompt,
             config=generate_content_config
         )
