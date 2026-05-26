@@ -552,6 +552,50 @@ def sanitize_md(text):
     text = text.replace("`", "'")
     return text
 
+async def safe_edit_text(msg, text, reply_markup=None, parse_mode='Markdown'):
+    try:
+        await msg.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except BadRequest as e:
+        err_str = str(e).lower()
+        if "message is too long" in err_str or "message_too_long" in err_str:
+            truncated = text[:3900] + "...\n\n⚠️ *Kırpıldı (Sınır Aşıldı)*"
+            try:
+                await msg.edit_text(truncated, reply_markup=reply_markup, parse_mode=parse_mode)
+            except Exception:
+                await msg.edit_text(text[:3900], reply_markup=reply_markup)
+        elif "can't parse entities" in err_str:
+            try:
+                await msg.edit_text(text, reply_markup=reply_markup)
+            except BadRequest as e2:
+                if "too long" in str(e2).lower():
+                    await msg.edit_text(text[:3900], reply_markup=reply_markup)
+                else:
+                    raise e2
+        else:
+            raise e
+
+async def safe_reply_text(message_obj, text, reply_markup=None, parse_mode='Markdown'):
+    try:
+        return await message_obj.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except BadRequest as e:
+        err_str = str(e).lower()
+        if "message is too long" in err_str or "message_too_long" in err_str:
+            truncated = text[:3900] + "...\n\n⚠️ *Kırpıldı (Sınır Aşıldı)*"
+            try:
+                return await message_obj.reply_text(truncated, reply_markup=reply_markup, parse_mode=parse_mode)
+            except Exception:
+                return await message_obj.reply_text(text[:3900], reply_markup=reply_markup)
+        elif "can't parse entities" in err_str:
+            try:
+                return await message_obj.reply_text(text, reply_markup=reply_markup)
+            except BadRequest as e2:
+                if "too long" in str(e2).lower():
+                    return await message_obj.reply_text(text[:3900], reply_markup=reply_markup)
+                else:
+                    raise e2
+        else:
+            raise e
+
 def get_intraday_signal(symbol: str) -> dict | None:
     try:
         ticker_sym = f"{symbol.upper()}.IS"
@@ -638,7 +682,7 @@ def get_intraday_signal(symbol: str) -> dict | None:
         2. Bu verilere göre 1-2 saatlik periyotta hisse nasıl hareket edebilir?
         3. Çok kısa bir 'Scalper Notu' ekle.
         
-        Kural: Çok kısa, net ve vurucu konuş. Karmaşık terimlerden kaçın. Madde işareti olarak sadece '•' kullan.
+        Kural: Çok kısa, net ve vurucu konuş. Karmaşık terimlerden kaçın. Madde işareti olarak sadece '•' kullan. Raporun tamamı en fazla 1500 karakter olmalıdır.
         'Yatırım tavsiyesi değildir.'
         """
         
@@ -839,6 +883,7 @@ def get_stock_analysis(symbol):
         2. Teknik terimleri (RSI, MACD vb.) doğrudan yazmak yerine anlamlarını yorumlayarak anlat.
         3. İnsanları teknik verilere boğma. Sadece verilen sayıların iyi mi kötü olduğunu söyle.
         4. İnternetten bu hisse ile ilgili SON 24 SAATTEKİ gelişmeleri kontrol et.
+        5. Raporun tamamı en fazla 2000 karakter uzunluğunda olmalıdır. Çok uzun raporlar Telegram sınırı nedeniyle engellenmektedir. Kısa, net, öz ve vurucu yaz.
         
         Makro Durum: {macro_context}
         Endeks Durumu: {market_context}
@@ -954,7 +999,7 @@ def get_daily_prediction(symbol):
         ⚖️ *İŞLEM SEVİYELERİ*
         🔮 *GÜNÜN TAHMİNİ*
         
-        ÖNEMLİ: Madde işaretleri için sadece '•' karakterini kullan. Kalın yazmak için '*'.
+        ÖNEMLİ: Madde işaretleri için sadece '•' karakterini kullan. Kalın yazmak için '*'. Raporun tamamı en fazla 2000 karakter olmalıdır. Kısa ve öz yaz.
         'Yatırım tavsiyesi değildir.' şeklinde bitir.
         """
         
@@ -1026,41 +1071,29 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not symbol:
         await update.message.reply_text("🚨 Lütfen sembol girin. Örn: `/analiz thyao`", parse_mode='Markdown')
         return
-    msg = await update.message.reply_text(f"⏳ *{symbol}* için Analiz yapılıyor...", parse_mode='Markdown')
+    msg = await safe_reply_text(update.message, f"⏳ *{symbol}* için Analiz yapılıyor...", parse_mode='Markdown')
     res = await asyncio.to_thread(get_stock_analysis, symbol)
     if res:
         keyboard = [[InlineKeyboardButton(f"📌 {symbol} Listeye Ekle", callback_data=f'ekle_{symbol}')],
                     [InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
         text = f"🏆 *RAPOR: {symbol}*\n💰 Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
-        try:
-            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        except BadRequest as e:
-            if "Can't parse entities" in str(e):
-                await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                raise e
+        await safe_edit_text(msg, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await msg.edit_text("❌ Veri bulunamadı.")
+        await safe_edit_text(msg, "❌ Veri bulunamadı.")
 
 async def tahmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper() if context.args else None
     if not symbol:
         await update.message.reply_text("🚨 Lütfen sembol girin.", parse_mode='Markdown')
         return
-    msg = await update.message.reply_text(f"⏳ *{symbol}* için Tahmin yapılıyor...", parse_mode='Markdown')
+    msg = await safe_reply_text(update.message, f"⏳ *{symbol}* için Tahmin yapılıyor...", parse_mode='Markdown')
     res = await asyncio.to_thread(get_daily_prediction, symbol)
     if res:
         keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
         text = f"📈 *TAHMİN: {symbol}*\n💰 Fiyat: {res['price']} TL\n━━━━━━━━━━━━━━━━━━\n{res['analysis']}"
-        try:
-            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        except BadRequest as e:
-            if "Can't parse entities" in str(e):
-                await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                raise e
+        await safe_edit_text(msg, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await msg.edit_text("❌ Tahmin bulunamadı.")
+        await safe_edit_text(msg, "❌ Tahmin bulunamadı.")
 
 async def tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔭 *TARAYICI BAŞLATILDI*...", parse_mode='Markdown')
@@ -1106,7 +1139,7 @@ async def sinyal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not symbol:
         await update.message.reply_text("🚨 Lütfen sembol girin. Örn: `/sinyal thyao`", parse_mode='Markdown')
         return
-    msg = await update.message.reply_text(f"⏳ *{symbol}* için 15 dakikalık Anlık Sinyaller analiz ediliyor...", parse_mode='Markdown')
+    msg = await safe_reply_text(update.message, f"⏳ *{symbol}* için 15 dakikalık Anlık Sinyaller analiz ediliyor...", parse_mode='Markdown')
     res = await asyncio.to_thread(get_intraday_signal, symbol)
     if res:
         keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
@@ -1121,15 +1154,9 @@ async def sinyal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• {res['trix_yorum']} ({res['trix_val']})\n\n"
             f"🧠 *YAPAY ZEKA YORUMU:*\n{res['ai_yorum']}"
         )
-        try:
-            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        except BadRequest as e:
-            if "Can't parse entities" in str(e):
-                await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                raise e
+        await safe_edit_text(msg, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await msg.edit_text("❌ Yeterli anlık veri bulunamadı. (Mesai saatleri dışında veya sorunlu hisse)")
+        await safe_edit_text(msg, "❌ Yeterli anlık veri bulunamadı. (Mesai saatleri dışında veya sorunlu hisse)")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1149,18 +1176,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not watchlist:
             await query.message.reply_text("Liste boş!")
             return
-        await query.message.reply_text("📉 *Haftalık Tarama...*")
+        await safe_reply_text(query.message, "📉 *Haftalık Tarama...*")
         for s in watchlist:
             res = await asyncio.to_thread(get_stock_analysis, s)
             if res:
                 text = f"📍 *{s}*\n{res['analysis']}"
-                try:
-                    await query.message.reply_text(text, parse_mode='Markdown')
-                except BadRequest as e:
-                    if "Can't parse entities" in str(e):
-                        await query.message.reply_text(text)
-                    else:
-                        raise e
+                await safe_reply_text(query.message, text, parse_mode='Markdown')
     elif data == 'bilgi_al':
         await query.message.reply_text("📚 *Borsa Sözlüğü aktif.*", parse_mode='Markdown')
     elif data == 'anlik_sinyal':
