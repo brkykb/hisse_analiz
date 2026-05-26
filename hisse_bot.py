@@ -81,6 +81,9 @@ BIST_SCAN_LIST = [
     "VESBE","VESTL",
     # Diğer Likit
     "KOZAA","ALARK","DOHOL","GESAN","YATAS",
+    # Küçük ve Orta Ölçekli Büyüme Hisseleri (Mid & Small Cap)
+    "MIATK","ALFAS","YEOTK","KCAER","SMRTG","SDTTR","KONTR","REEDR","ASTOR","ODAS",
+    "CANTE","HUNER","JANTS","EGEEN","TMSN","ALCAR","PKART","KRONT","FONET","HEKTS"
 ]
 
 BIST_TICKERS_CACHE = {"time": 0, "list": []}
@@ -235,46 +238,47 @@ def quick_screen_calc(symbol: str, data: pd.DataFrame) -> dict | None:
 
         # ─── TEMEL FİLTRELER (Sadece teknikten geçenlere uygulanır) ───
         try:
-            info = yf.Ticker(ticker_sym).info
+            ticker_info = yf.Ticker(ticker_sym).info
+            info = ticker_info if isinstance(ticker_info, dict) else {}
             
             # 1. Öz sermaye negatif olmayacak
             bv = info.get("bookValue")
             if bv is not None and isinstance(bv, (int, float)) and bv <= 0:
                 return None
                 
-            # 2. F/K < 10
+            # 2. F/K < 25 (Büyüyen küçük hisseleri dışlamamak için limit esnetildi)
             fk = info.get("forwardPE") or info.get("trailingPE")
-            if fk is not None and isinstance(fk, (int, float)) and fk >= 10:
+            if fk is not None and isinstance(fk, (int, float)) and fk >= 25:
                 return None
                 
-            # 3. PD/DD <= 10
+            # 3. PD/DD <= 5 (Aşırı şişmemiş hisseler)
             pddd = info.get("priceToBook")
-            if pddd is not None and isinstance(pddd, (int, float)) and pddd > 10:
+            if pddd is not None and isinstance(pddd, (int, float)) and pddd > 5:
                 return None
                 
-            # 4. Yıllık kar büyümesi >= 100% (1.0)
+            # 4. Yıllık kar büyümesi >= 20% (0.20)
             eg = info.get("earningsGrowth")
-            if eg is not None and isinstance(eg, (int, float)) and eg < 1.0:
+            if eg is not None and isinstance(eg, (int, float)) and eg < 0.20:
                 return None
                 
-            # 5. Hisse Başına Kar (EPS) >= 0
+            # 5. Hisse Başına Kar (EPS) >= 0 (Zarar eden şirketler elenir)
             eps = info.get("trailingEps")
             if eps is not None and isinstance(eps, (int, float)) and eps < 0:
                 return None
                 
-            # 6. PEG <= 1
+            # 6. PEG <= 2.0 (Büyüme/Fiyat dengesi)
             peg = info.get("pegRatio")
-            if peg is not None and isinstance(peg, (int, float)) and peg > 1:
+            if peg is not None and isinstance(peg, (int, float)) and peg > 2.0:
                 return None
                 
-            # 7. Özkaynak Karlılığı (ROE) >= %10
+            # 7. Özkaynak Karlılığı (ROE) >= %15
             roe = info.get("returnOnEquity")
-            if roe is not None and isinstance(roe, (int, float)) and roe < 0.10:
+            if roe is not None and isinstance(roe, (int, float)) and roe < 0.15:
                 return None
                 
-            # 8. ROIC (Proxy: ROA) >= %30
+            # 8. Aktif Karlılık ROA >= %5 (BIST gerçeklerine uygun ve adil seviye)
             roa = info.get("returnOnAssets")
-            if roa is not None and isinstance(roa, (int, float)) and roa < 0.30:
+            if roa is not None and isinstance(roa, (int, float)) and roa < 0.05:
                 return None
 
             # Eğer temel veriler uygunsa (veya yfinance eksik verse bile diğerlerini geçmişse)
@@ -369,21 +373,22 @@ def custom_screen_calc(symbol: str, data: pd.DataFrame) -> dict | None:
             return None
 
         # Fundamental Filters
-        info = yf.Ticker(ticker_sym).info
+        ticker_info = yf.Ticker(ticker_sym).info
+        info = ticker_info if isinstance(ticker_info, dict) else {}
         
-        # 1. Özsermaye = Sermayenin en az 2, en fazla 3 katı (Defter değeri 2 ile 3)
+        # 1. Özsermaye en az 2 TL olacak (sermaye kaybı/erimesi olmaması için alt limit)
         bv = info.get("bookValue")
-        if bv is None or not isinstance(bv, (int, float)) or not (2.0 <= bv <= 3.0):
+        if bv is not None and isinstance(bv, (int, float)) and bv < 2.0:
             return None
             
-        # 2. FD/FAVÖK (EV/EBITDA) <= 10
+        # 2. FD/FAVÖK (EV/EBITDA) <= 12 (Mevcutsa kontrol edilir, eksikse elenmez)
         ev_ebitda = info.get("enterpriseToEbitda")
-        if ev_ebitda is None or not isinstance(ev_ebitda, (int, float)) or ev_ebitda > 10.0:
+        if ev_ebitda is not None and isinstance(ev_ebitda, (int, float)) and ev_ebitda > 12.0:
             return None
             
-        # 3. PD/DD (Fiyat/Defter Değeri) <= 1.5
+        # 3. PD/DD (Fiyat/Defter Değeri) <= 2.5 (Mevcutsa kontrol edilir, eksikse elenmez)
         pddd = info.get("priceToBook")
-        if pddd is None or not isinstance(pddd, (int, float)) or pddd > 1.5:
+        if pddd is not None and isinstance(pddd, (int, float)) and pddd > 2.5:
             return None
 
         price = float(close.iloc[-1])
@@ -666,6 +671,7 @@ def get_stock_news(symbol: str) -> str:
             xml_data = response.read()
             root = ET.fromstring(xml_data)
             from datetime import datetime, timedelta
+            from email.utils import parsedate_to_datetime
             now = datetime.now()
             news = []
             for item in root.findall('.//item'):
@@ -697,7 +703,9 @@ def get_stock_analysis(symbol):
         
         info = {}
         try:
-            info = ticker.info
+            ticker_info = ticker.info
+            if isinstance(ticker_info, dict):
+                info = ticker_info
         except Exception as e:
             logging.warning(f"Temel veriler alinamadi: {e}")
 
@@ -904,7 +912,8 @@ def get_daily_prediction(symbol):
         
         # Günlük Tahmin için de Temel Verileri Çekelim
         try:
-            info = yf.Ticker(ticker_sym).info
+            ticker_info = yf.Ticker(ticker_sym).info
+            info = ticker_info if isinstance(ticker_info, dict) else {}
             fk = info.get("forwardPE") or info.get("trailingPE") or "Veri Yok"
             pddd = info.get("priceToBook") or "Veri Yok"
             roic = info.get("returnOnInvestedCapital") or info.get("returnOnAssets") or 0.0
