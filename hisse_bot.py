@@ -320,28 +320,46 @@ def run_market_scan(scan_list: list[str]) -> list[dict]:
         
     try:
         tickers = [f"{sym}.IS" for sym in scan_list]
-        # YFinance toplu indirme (Koyeb gibi sınırlı ortamlarda thread sayısını kısıtlıyoruz)
+        # YFinance toplu indirme
         df = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', progress=False, auto_adjust=True, threads=10)
         
         is_multi = isinstance(df.columns, pd.MultiIndex)
         
+        # AŞAMA 1: Teknik ve Temel (info) Hızlı Eleme
+        stage1_candidates = []
         for sym in scan_list:
             ticker_sym = f"{sym}.IS"
             try:
                 if is_multi:
-                    # MultiIndex ('THYAO.IS', 'Close') vb. olduğu için direkt ilgili hisseyi seçebiliriz
                     if ticker_sym not in df.columns.levels[0]:
                         continue
                     stock_data = df[ticker_sym].dropna(how='all')
                 else:
-                    # Sadece 1 hisse geldiyse dümdüz dataframe'dir
                     stock_data = df.dropna(how='all')
                     
                 res = quick_screen_calc(sym, stock_data)
                 if res:
-                    results.append(res)
+                    stage1_candidates.append(res)
             except Exception as e:
                 logging.warning(f"Scan loop error ({sym}): {e}")
+                
+        # AŞAMA 2: En iyi potansiyelli ilk 25 hisse için Çeyreklik Mali Tablo Denetimi (Stage 2 Audit)
+        stage1_candidates = sorted(stage1_candidates, key=lambda x: x["score"], reverse=True)
+        
+        for res in stage1_candidates[:25]:
+            sym = res["symbol"]
+            audit = audit_quarterly_financials(sym)
+            if audit["status"] == "pass":
+                # Kriterleri geçti, çeyreklik gelişim puanları eklendi
+                res["score"] += audit["score_bonus"]
+                res["tags"].extend(audit["details"])
+                results.append(res)
+            elif audit["status"] in ["missing", "error"]:
+                # BIST verileri Yahoo'da eksikse eleme, direkt listeye ekle (bonussuz)
+                results.append(res)
+            else:
+                # Kriterleri geçemedi (çeyreklik zarar veya özsermaye kaybı) -> ELE!
+                logging.info(f"Fırsat Tarayıcı Çeyreklik Denetimde Elendi ({sym}): {audit['reason']}")
                 
     except Exception as e:
         logging.error(f"Bulk download error: {e}")
@@ -412,6 +430,9 @@ def run_custom_scan(scan_list: list[str]) -> list[dict]:
         tickers = [f"{sym}.IS" for sym in scan_list]
         df = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', progress=False, auto_adjust=True, threads=10)
         is_multi = isinstance(df.columns, pd.MultiIndex)
+        
+        # AŞAMA 1: Teknik ve Temel (info) Hızlı Eleme
+        stage1_candidates = []
         for sym in scan_list:
             ticker_sym = f"{sym}.IS"
             try:
@@ -423,9 +444,27 @@ def run_custom_scan(scan_list: list[str]) -> list[dict]:
                     stock_data = df.dropna(how='all')
                 res = custom_screen_calc(sym, stock_data)
                 if res:
-                    results.append(res)
+                    stage1_candidates.append(res)
             except:
                 continue
+                
+        # AŞAMA 2: RSI en düşük olan ilk 20 kelepir aday için Çeyreklik Mali Tablo Denetimi (Stage 2 Audit)
+        stage1_candidates = sorted(stage1_candidates, key=lambda x: x["rsi"])
+        for res in stage1_candidates[:20]:
+            sym = res["symbol"]
+            audit = audit_quarterly_financials(sym)
+            if audit["status"] == "pass":
+                # Kriterleri geçti, verileri rapora ekle
+                res["net_inc"] = round(audit["latest_net_inc"] / 1000000.0, 1)
+                res["ebitda"] = round(audit["latest_ebitda"] / 1000000.0, 1)
+                results.append(res)
+            elif audit["status"] in ["missing", "error"]:
+                res["net_inc"] = "Veri Yok"
+                res["ebitda"] = "Veri Yok"
+                results.append(res)
+            else:
+                # Çeyreklik kar/bilanço erimesi tespit edildi -> ELE!
+                logging.info(f"Özel Tarayıcı Çeyreklik Denetimde Elendi ({sym}): {audit['reason']}")
     except:
         pass
     return sorted(results, key=lambda x: x["rsi"])
@@ -540,6 +579,103 @@ def calculate_indicators(data):
         "vol_ratio": round(vol_ratio, 2),
         "algo_signal": algo_signal
     }
+
+def audit_quarterly_financials(symbol: str) -> dict:
+    """
+    yfinance üzerinden hissenin çeyreklik mali tablolarını denetler.
+    Yatırım yapılabilirliği ve çeyreklik kar gelişimini analiz eder.
+    """
+    try:
+        ticker_sym = f"{symbol.upper()}.IS"
+        t = yf.Ticker(ticker_sym)
+        
+        # 1. Çeyreklik Gelir Tablosu
+        q_fin = t.quarterly_financials
+        if q_fin is None or q_fin.empty:
+            return {"status": "missing", "score_bonus": 0, "reason": "Çeyreklik finansal veri bulunamadı"}
+            
+        # Case-insensitive row name lookup
+        def get_row(df, key):
+            for r in df.index:
+                if str(r).strip().lower().replace(" ", "") == key.lower().replace(" ", ""):
+                    return r
+            return None
+            
+        net_inc_row = get_row(q_fin, "NetIncome") or get_row(q_fin, "NetIncomeCommonStockholders")
+        ebitda_row = get_row(q_fin, "EBITDA") or get_row(q_fin, "OperatingIncome")
+        
+        if not net_inc_row or not ebitda_row:
+            return {"status": "missing", "score_bonus": 0, "reason": "Net Kar veya FAVÖK satırı bulunamadı"}
+            
+        net_inc_series = q_fin.loc[net_inc_row].dropna()
+        ebitda_series = q_fin.loc[ebitda_row].dropna()
+        
+        if len(net_inc_series) < 2 or len(ebitda_series) < 2:
+            return {"status": "missing", "score_bonus": 0, "reason": "Yetersiz çeyreklik veri serisi"}
+            
+        # Extract numeric values
+        try:
+            latest_net_inc = float(net_inc_series.iloc[0])
+            prev_net_inc = float(net_inc_series.iloc[1])
+            latest_ebitda = float(ebitda_series.iloc[0])
+            prev_ebitda = float(ebitda_series.iloc[1])
+        except (ValueError, TypeError):
+            return {"status": "missing", "score_bonus": 0, "reason": "Sayısal olmayan finansal değerler"}
+            
+        # Yatırımlık Kriter 1: Son çeyrekte zarar etmemiş olmalı
+        if latest_net_inc <= 0:
+            return {"status": "fail", "score_bonus": 0, "reason": f"Son çeyrek Net Zarar ({latest_net_inc/1e6:.1f}M)"}
+        if latest_ebitda <= 0:
+            return {"status": "fail", "score_bonus": 0, "reason": f"Son çeyrek Negatif FAVÖK ({latest_ebitda/1e6:.1f}M)"}
+            
+        score_bonus = 0
+        details = []
+        
+        # Net Kar büyüme analizi
+        if latest_net_inc > prev_net_inc:
+            score_bonus += 10
+            details.append("Çeyreklik Net Kar Artışı")
+        else:
+            details.append("Çeyreklik Net Kar Azalış")
+            
+        # FAVÖK büyüme analizi
+        if latest_ebitda > prev_ebitda:
+            score_bonus += 10
+            details.append("Çeyreklik FAVÖK Artışı")
+        else:
+            details.append("Çeyreklik FAVÖK Azalış")
+            
+        # 2. Çeyreklik Bilanço
+        q_bs = t.quarterly_balance_sheet
+        if q_bs is not None and not q_bs.empty:
+            equity_row = get_row(q_bs, "StockholdersEquity") or get_row(q_bs, "CommonStockEquity")
+            if equity_row:
+                equity_series = q_bs.loc[equity_row].dropna()
+                if len(equity_series) >= 2:
+                    try:
+                        latest_equity = float(equity_series.iloc[0])
+                        prev_equity = float(equity_series.iloc[1])
+                        
+                        # Yatırımlık Kriter 2: Özsermaye erimesi olmamalı
+                        if latest_equity < prev_equity:
+                            return {"status": "fail", "score_bonus": 0, "reason": "Çeyreklik Özsermaye Erimesi"}
+                            
+                        if latest_equity > prev_equity:
+                            score_bonus += 10
+                            details.append("Çeyreklik Özsermaye Artışı")
+                    except (ValueError, TypeError):
+                        pass
+                        
+        return {
+            "status": "pass",
+            "score_bonus": score_bonus,
+            "details": details,
+            "latest_net_inc": latest_net_inc,
+            "latest_ebitda": latest_ebitda
+        }
+    except Exception as e:
+        logging.warning(f"Quarterly audit failed for {symbol}: {e}")
+        return {"status": "error", "score_bonus": 0, "reason": f"Mali tablo hatası: {e}"}
 
 def sanitize_md(text):
     if not text: return ""
@@ -1096,43 +1232,36 @@ async def tahmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(msg, "❌ Tahmin bulunamadı.")
 
 async def tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔭 *TARAYICI BAŞLATILDI*...", parse_mode='Markdown')
     scan_list = get_all_bist_tickers()
+    msg = await safe_reply_text(update.message, f"🔭 *TARAYICI BAŞLATILDI*...\nPiyasadaki tüm hisseler taranıyor ({len(scan_list)} hisse)...", parse_mode='Markdown')
     results = await asyncio.to_thread(run_market_scan, scan_list)
     if not results:
-        await msg.edit_text("📭 Fırsat bulunamadı.")
+        await safe_edit_text(msg, "📭 Fırsat bulunamadı.")
         return
-    lines = ["🎯 *AL FIRSATI RADAR:*\n"]
+    lines = ["🎯 *AL FIRSATI RADAR (Çeyreklik Finansal Büyüme Filtreli):*\n"]
     for i, r in enumerate(results[:8], 1):
         grade = "🟢" if r['score'] >= 65 else "🟡"
-        lines.append(f"{grade} {i}. {r['symbol']} ({r['score']}/100) - {r['price']} TL")
+        # Extract quarterly tags if any
+        q_details = ", ".join([t for t in r['tags'] if "Çeyreklik" in t or "Özsermaye" in t])
+        q_suffix = f" | {q_details}" if q_details else ""
+        lines.append(f"{grade} {i}. {r['symbol']} ({r['score']}/100) - {r['price']} TL{q_suffix}")
     keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
-    try:
-        await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    except BadRequest as e:
-        if "Can't parse entities" in str(e):
-            await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            raise e
+    await safe_edit_text(msg, "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def ozel_tara(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🎯 *ÖZEL TARAYICI BAŞLATILDI*...\n(Metrikler: RSI 20-40, Özsermaye x2-x3, FAVÖK<=10, PD/DD<=1.5)", parse_mode='Markdown')
     scan_list = get_all_bist_tickers()
+    msg = await safe_reply_text(update.message, f"🎯 *ÖZEL TARAYICI BAŞLATILDI*...\nPiyasadaki tüm hisseler taranıyor ({len(scan_list)} hisse)...\n(Metrikler: Çeyreklik Kar/FAVÖK, RSI 20-40, Özsermaye >= 2 TL, PD/DD <= 2.5, FD/FAVÖK <= 12)", parse_mode='Markdown')
     results = await asyncio.to_thread(run_custom_scan, scan_list)
     if not results:
-        await msg.edit_text("📭 Bu özel kriterlere uyan hisse bulunamadı.")
+        await safe_edit_text(msg, "📭 Bu özel kriterlere uyan hisse bulunamadı.")
         return
-    lines = ["🔥 *ÖZEL KRİTERLERE UYANLAR:*\n"]
+    lines = ["🔥 *ÖZEL KRİTERLERE UYANLAR (Çeyreklik Finansal Büyüme Filtreli):*\n"]
     for i, r in enumerate(results, 1):
-        lines.append(f"✅ {i}. {r['symbol']} ({r['price']} TL) | RSI:{r['rsi']}, BV:{r['bv']}, PD/DD:{r['pddd']}, EV/EBITDA:{r['ev_ebitda']}")
+        net_inc_val = f"{r.get('net_inc')}M" if isinstance(r.get('net_inc'), (int, float)) else r.get('net_inc')
+        ebitda_val = f"{r.get('ebitda')}M" if isinstance(r.get('ebitda'), (int, float)) else r.get('ebitda')
+        lines.append(f"✅ {i}. {r['symbol']} ({r['price']} TL) | RSI:{r['rsi']} | Ç.Net Kar:{net_inc_val} | Ç.FAVÖK:{ebitda_val}")
     keyboard = [[InlineKeyboardButton("🏠 Ana Menü", callback_data='ana_menu')]]
-    try:
-        await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    except BadRequest as e:
-        if "Can't parse entities" in str(e):
-            await msg.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            raise e
+    await safe_edit_text(msg, "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def sinyal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper() if context.args else None
