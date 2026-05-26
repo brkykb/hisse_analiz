@@ -1207,6 +1207,33 @@ async def handle_regular_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.args = [text]
             await analiz(update, context)
 
+async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mini App'ten gönderilen verileri yakalar ve ilgili analiz fonksiyonuna yönlendirir."""
+    if update.message and update.message.web_app_data:
+        data = update.message.web_app_data.data.strip()
+        logging.info(f"Web App'ten veri alındı: {data}")
+        
+        parts = data.split()
+        if not parts:
+            return
+            
+        cmd = parts[0].lower()
+        args = parts[1:] if len(parts) > 1 else []
+        
+        # Argümanları context içine yerleştir
+        context.args = args
+        
+        if cmd == "/analiz":
+            await analiz(update, context)
+        elif cmd == "/tahmin":
+            await tahmin(update, context)
+        elif cmd == "/sinyal":
+            await sinyal(update, context)
+        elif cmd == "/tara":
+            await tara(update, context)
+        elif cmd == "/ozeltara":
+            await ozel_tara(update, context)
+
 # --- RENDER KEEP ALIVE (FLASK) ---
 flask_app = Flask('')
 
@@ -1243,6 +1270,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("ozeltara", ozel_tara))
     app.add_handler(CommandHandler("sinyal", sinyal))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_regular_text))
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     print("🚀 Bot Aktif!")
     app.run_polling()
